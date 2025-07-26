@@ -1,0 +1,6 @@
+Flask
+pandas
+requests
+firebase-admin
+gunicorn
+google-generativeai
