@@ -1,17 +1,33 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, redirect, url_for, flash
 import os
 
-# Importez vos propres fonctions d'analyse
-# (Nous les ajouterons plus tard. Pour l'instant, on veut juste que ça marche.)
+# On importe nos nouvelles fonctions "bibliothèque"
+from analyse_loto import lancer_analyse_complete
+from collect_and_update import lancer_collecte
 
 app = Flask(__name__)
+# Une clé secrète est nécessaire pour afficher des messages
+app.secret_key = os.urandom(24)
 
 @app.route('/')
 def index():
     """Affiche la page d'accueil."""
-    # Pour l'instant, on affiche une page simple.
-    return "<h1>Bonjour, mon application Loto est en ligne !</h1>"
+    return render_template('index.html')
+
+@app.route('/analyser', methods=['POST'])
+def analyser():
+    """Appelle la logique d'analyse et affiche les résultats."""
+    print("Demande d'analyse reçue...")
+    resultats = lancer_analyse_complete()
+    return render_template('resultat.html', resultats=resultats)
+
+@app.route('/mettre_a_jour', methods=['POST'])
+def mettre_a_jour():
+    """Appelle le script de collecte de données."""
+    print("Demande de mise à jour reçue...")
+    message = lancer_collecte()
+    flash(message) # Prépare un message à afficher
+    return redirect(url_for('index')) # Redirige vers la page d'accueil
 
 if __name__ == '__main__':
-    # Le port est défini par Render, pas besoin de le spécifier ici.
     app.run()
