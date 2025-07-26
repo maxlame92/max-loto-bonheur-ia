@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# Ce fichier est maintenant une bibliothèque de fonctions.
 
 import csv
 from collections import defaultdict, Counter
@@ -9,14 +10,6 @@ from datetime import datetime
 import pandas as pd
 import re
 
-# --- Imports pour la visualisation et l'IA ---
-try:
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    VISUALISATION_DISPONIBLE = True
-except ImportError:
-    VISUALISATION_DISPONIBLE = False
-
 try:
     import google.generativeai as genai
     IA_DISPONIBLE = True
@@ -26,18 +19,9 @@ except ImportError:
 # --- CONFIGURATIONS ET PARAMÈTRES ---
 NOM_FICHIER_DONNEES = "resultats_loto_bonheur_COMPLET.csv"
 NOM_FICHIER_BASE_CONNAISSANCE = "base de numero et cest accompagne.txt"
-
-# -----------------------------------------------------------------------------
-# --- PARAMÈTRES OPTIMISÉS ---
-# -----------------------------------------------------------------------------
-MODE_BACKTEST = False 
-NOMBRE_JOURS_BACKTEST = 30 
 FENETRE_RGNTC = 3
 FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
-# -----------------------------------------------------------------------------
-
-TOP_N_HEATMAP = 25
 
 # --- FONCTIONS DE TRAITEMENT ET D'ANALYSE ---
 def nettoyer_numeros_str(numeros_str):
@@ -45,49 +29,47 @@ def nettoyer_numeros_str(numeros_str):
     return [int(n.strip()) for n in numeros_str.split(',') if n.strip().isdigit()]
 
 def lire_base_connaissance(nom_fichier):
-    print(f"Lecture de la base de connaissance '{nom_fichier}'...")
     base_connaissance = {}
+    if not os.path.exists(nom_fichier):
+        print(f"-> Fichier connaissance non trouvé: {nom_fichier}")
+        return None
     try:
         with open(nom_fichier, mode='r', encoding='utf-8') as f:
             for ligne in f:
                 if "numero:" in ligne and "accompagnateur:" in ligne:
-                    try:
-                        partie_numero, partie_acc = ligne.split("accompagnateur:")
-                        base_connaissance[int(partie_numero.replace("numero:", "").strip())] = set(nettoyer_numeros_str(partie_acc))
-                    except (ValueError, IndexError): continue
-        print(f"-> {len(base_connaissance)} règles chargées.")
+                    partie_numero, partie_acc = ligne.split("accompagnateur:")
+                    base_connaissance[int(partie_numero.replace("numero:", "").strip())] = set(nettoyer_numeros_str(partie_acc))
         return base_connaissance
-    except FileNotFoundError:
-        print(f"-> ❌ Fichier non trouvé.")
+    except Exception as e:
+        print(f"-> Erreur lecture base connaissance: {e}")
         return None
 
 def lire_tirages_enrichis(nom_fichier):
-    tirages, lignes_ignorees = [], 0
-    print(f"Lecture de l'historique des tirages '{nom_fichier}'...")
+    tirages = []
+    if not os.path.exists(nom_fichier):
+        print(f"-> Fichier historique non trouvé: {nom_fichier}")
+        return None
     try:
         with open(nom_fichier, mode='r', encoding='utf-8-sig') as f:
             for ligne in csv.DictReader(f):
                 date_str = ligne.get("date_complete")
-                if not date_str: lignes_ignorees += 1; continue
+                if not date_str: continue
                 try:
                     date_obj = pd.to_datetime(date_str, format='mixed', dayfirst=True).to_pydatetime()
-                except (ValueError, TypeError):
-                    lignes_ignorees += 1; continue
+                except (ValueError, TypeError): continue
                 gagnants = nettoyer_numeros_str(ligne.get("numeros_gagnants"))
                 machine = nettoyer_numeros_str(ligne.get("numeros_machine"))
                 numeros_sortis = set(gagnants + machine)
-                if not numeros_sortis:
-                    lignes_ignorees += 1; continue
+                if not numeros_sortis: continue
                 tirages.append({
                     "date_obj": date_obj, "nom_du_tirage": ligne.get("nom_du_tirage"),
                     "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
                 })
         tirages.sort(key=lambda x: x['date_obj'])
-        print(f"-> {len(tirages)} tirages valides chargés et triés.")
-        if lignes_ignorees: print(f"   ({lignes_ignorees} lignes ignorées).")
         return tirages
-    except FileNotFoundError: print(f"-> ❌ Fichier non trouvé."); return None
-    except Exception as e: print(f"-> ❌ Erreur critique : {e}"); return None
+    except Exception as e:
+        print(f"-> Erreur lecture historique: {e}")
+        return None
 
 def analyser_affinites_temporelles(tous_les_tirages, date_cible):
     jour_cible, mois_cible = date_cible.day, date_cible.month
@@ -156,151 +138,52 @@ def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data
 
 def appeler_ia_gemini(prompt):
     try:
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key: return "❌ ERREUR : Clé d'API non trouvée."
+        # Sur Render, les secrets sont dans les variables d'environnement
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        if not api_key:
+            # Si la clé n'est pas dans l'environnement, essayer le fichier .env local
+            from dotenv import load_dotenv
+            load_dotenv()
+            api_key = os.getenv("GOOGLE_API_KEY")
+
+        if not api_key:
+            return "ERREUR : Clé d'API GOOGLE_API_KEY non trouvée."
+        
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"❌ Erreur API : {e}"
+        return f"Erreur API Gemini: {e}"
 
-def extraire_predictions_de_reponse(texte_ia):
-    try:
-        match = re.search(r'(?:Prédiction Finale|sont|numéros\s*:\s*)\s*(\d{1,2})\s*(?:et|,|puis)\s*(\d{1,2})', texte_ia, re.IGNORECASE)
-        if match: return [int(match.group(1)), int(match.group(2))]
-        numeros_gras = re.findall(r'\*\*(\d{1,2})\*\*', texte_ia)
-        if len(numeros_gras) >= 2: return [int(n) for n in numeros_gras[:2]]
-        numeros = re.findall(r'\b(\d{1,2})\b', texte_ia)
-        if len(numeros) >= 2: return [int(n) for n in numeros[-2:]]
-    except Exception: pass
-    return []
-
-def lancer_backtest(tous_les_tirages, base_connaissance, nombre_jours):
-    # ... (code du backtest, inchangé)
-    print("\n" + "="*60); print(f"--- 🚀 LANCEMENT DU BACKTESTING SUR {nombre_jours} JOURS 🚀 ---"); print("="*60)
+# --- LA FONCTION PRINCIPALE QUE L'ON VA IMPORTER ---
+def lancer_analyse_complete():
+    """Exécute tout le pipeline d'analyse et retourne les résultats."""
+    print("--- Lancement de l'analyse complète (version web) ---")
     
-    dates_uniques = sorted(list(set(t['date_obj'].date() for t in tous_les_tirages)))
-    if len(dates_uniques) <= nombre_jours:
-        print("❌ Erreur : Pas assez de jours de données pour effectuer le backtest."); return
-
-    succes_total, jours_testes = 0, 0
-    start_index = len(dates_uniques) - nombre_jours - 1
+    base_connaissance = lire_base_connaissance(NOM_FICHIER_BASE_CONNAISSANCE)
+    tous_les_tirages = lire_tirages_enrichis(NOM_FICHIER_DONNEES)
     
-    for i in range(start_index, len(dates_uniques) - 1):
-        jours_testes += 1
-        date_veille, date_cible = dates_uniques[i], dates_uniques[i+1]
-        
-        print(f"\n--- JOUR DE TEST {jours_testes}/{nombre_jours} | Prédiction pour le : {date_cible.strftime('%d/%m/%Y')} ---")
+    if not tous_les_tirages:
+        return {"erreur": "Le chargement des tirages a échoué. Lancez une mise à jour des données."}
 
-        donnees_historiques = [t for t in tous_les_tirages if t['date_obj'].date() <= date_veille]
-        if not donnees_historiques: continue
-        dernier_tirage = donnees_historiques[-1]
+    rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
+    forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
+    affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
+    
+    dernier_tirage = tous_les_tirages[-1]
+    gagnants_str = ",".join(map(str, dernier_tirage.get('gagnants', [])))
+    machine_str = ",".join(map(str, dernier_tirage.get('machine', [])))
+    contexte_str = f"{dernier_tirage['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\""
 
-        rapport_rgntc = analyser_relations_rgntc(donnees_historiques)
-        forme_ecart_data = calculer_forme_et_ecart(donnees_historiques)
-        affinites_temporelles = analyser_affinites_temporelles(donnees_historiques, date_cible)
-        
-        print("   - Génération du prompt et appel de l'IA...")
+    if IA_DISPONIBLE:
         prompt = generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles)
         reponse_ia = appeler_ia_gemini(prompt)
-        numeros_predits = extraire_predictions_de_reponse(reponse_ia)
-        
-        if not numeros_predits:
-            print("   - ⚠️ Impossible d'extraire la prédiction de la réponse de l'IA."); continue
-
-        tirages_du_jour_cible = [t['numeros_sortis'] for t in tous_les_tirages if t['date_obj'].date() == date_cible]
-        numeros_gagnants_du_jour = set(num for tirage in tirages_du_jour_cible for num in tirage)
-
-        print(f"   - Prédiction IA : {numeros_predits} | Vrais numéros du jour : {sorted(list(numeros_gagnants_du_jour))}")
-
-        succes = any(num_predit in numeros_gagnants_du_jour for num_predit in numeros_predits)
-        
-        if succes:
-            succes_total += 1
-            print("   - ✅ RÉSULTAT : SUCCÈS !")
-        else:
-            print("   - ❌ RÉSULTAT : ÉCHEC")
-        time.sleep(2)
-
-    print("\n" + "="*60); print("--- 📊 RAPPORT FINAL DU BACKTESTING 📊 ---"); print(f"Période de test : {jours_testes} jours")
-    print(f"Nombre de succès (au moins 1 bon numéro) : {succes_total}")
-    if jours_testes > 0:
-        print(f"Taux de réussite : {(succes_total / jours_testes) * 100:.2f}%")
-    print("="*60)
-
-# --- FONCTION DE VISUALISATION CORRIGÉE ---
-def visualiser_heatmap(rapport_rgntc, freqs_triees, type_relation):
-    if not VISUALISATION_DISPONIBLE: return
-    print(f"-> Génération de la Heatmap pour les '{type_relation.capitalize()}'...")
-    top_nums = [n for n, f in freqs_triees[:TOP_N_HEATMAP]]
-    matrice = pd.DataFrame(0, index=top_nums, columns=top_nums, dtype=int)
-    for n1 in top_nums: # La boucle extérieure définit n1
-        if n1 in rapport_rgntc:
-            for n2, freq in rapport_rgntc[n1][type_relation]:
-                if n2 in top_nums:
-                    if type_relation == 'compagnons':
-                        matrice.loc[n1, n2] = freq
-                        matrice.loc[n2, n1] = freq
-                    else:
-                        # --- CORRECTION ICI ---
-                        # On utilise bien n1 (défini par la boucle) et n2
-                        matrice.loc[n1, n2] = freq
-                        # --- FIN DE LA CORRECTION ---
-    plt.figure(figsize=(18, 15))
-    sns.heatmap(matrice, annot=True, cmap="viridis", fmt="d", linewidths=.5)
-    plt.title(f"Heatmap des {type_relation.capitalize()} des {TOP_N_HEATMAP} Numéros", fontsize=16)
-    plt.show(block=False)
-
-
-# --- PROGRAMME PRINCIPAL ---
-if __name__ == "__main__":
-    
-    if MODE_BACKTEST:
-        # ... (code du mode backtest inchangé)
-        print("\n" + "="*60); print("--- MODE BACKTESTING ACTIVÉ ---"); print("="*60)
-        base_connaissance_statique = lire_base_connaissance(NOM_FICHIER_BASE_CONNAISSANCE)
-        tous_les_tirages = lire_tirages_enrichis(NOM_FICHIER_DONNEES)
-        if tous_les_tirages and IA_DISPONIBLE:
-            lancer_backtest(tous_les_tirages, base_connaissance_statique, NOMBRE_JOURS_BACKTEST)
-        elif not IA_DISPONIBLE:
-            print("\n❌ ERREUR : Le mode Backtest nécessite le module IA.")
     else:
-        print("\n" + "="*60); print("--- MODE PRÉDICTION UNIQUE ACTIVÉ ---"); print("="*60)
-        print("\n--- ÉTAPE 1: CHARGEMENT DES DONNÉES ---")
-        base_connaissance_statique = lire_base_connaissance(NOM_FICHIER_BASE_CONNAISSANCE)
-        tous_les_tirages = lire_tirages_enrichis(NOM_FICHIER_DONNEES) 
-        if tous_les_tirages:
-            print("\n--- ÉTAPE 2: ANALYSE STATISTIQUE ---")
-            rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
-            forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
-            affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
-            print("-> Analyses terminées.")
-            
-            if rapport_rgntc:
-                dernier_tirage = tous_les_tirages[-1]
-                print("\n--- ÉTAPE 3: PRÉDICTION PAR IA ---")
-                gagnants_str = ",".join(map(str, dernier_tirage.get('gagnants', []))); machine_str = ",".join(map(str, dernier_tirage.get('machine', [])))
-                print(f"Analyse basée sur le dernier tirage connu :\n{dernier_tirage['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\"")
+        reponse_ia = "Module IA (google-generativeai) non disponible ou clé d'API manquante."
 
-                if IA_DISPONIBLE:
-                    start_time = time.time()
-                    prompt = generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance_statique, affinites_temporelles)
-                    reponse = appeler_ia_gemini(prompt)
-                    end_time = time.time()
-                    print(f"Connexion à l'API Google AI (Gemini)...")
-                    print(f"-> Réponse reçue en {end_time - start_time:.2f} secondes.")
-                    print("\n" + "-"*15 + " 🧠 ANALYSE DE L'IA 🧠 " + "-"*15); print(reponse); print("-" * 60)
-                else:
-                    print("\nModule IA non installé.")
-
-                if VISUALISATION_DISPONIBLE:
-                    print("\n--- ÉTAPE 4: VISUALISATIONS (HEATMAPS) ---")
-                    freq_globale = Counter(num for t in tous_les_tirages for num in t['numeros_sortis'])
-                    freqs_triees = freq_globale.most_common()
-                    visualiser_heatmap(rapport_rgntc, freqs_triees, 'compagnons')
-                    visualiser_heatmap(rapport_rgntc, freqs_triees, 'suiveurs')
-                    visualiser_heatmap(rapport_rgntc, freqs_triees, 'precurseurs')
-                    print("\n-> Fermez TOUTES les fenêtres de graphiques pour terminer."); plt.show()
-        else:
-            print("\nLe chargement des tirages a échoué.")
+    return {
+        "contexte": contexte_str,
+        "reponse_ia": reponse_ia,
+        "erreur": None
+    }
