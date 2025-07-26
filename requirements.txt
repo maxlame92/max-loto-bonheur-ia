@@ -3,3 +3,4 @@ pandas
 requests
 gunicorn
 google-generativeai
+python-dotenv
