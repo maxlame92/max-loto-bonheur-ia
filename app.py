@@ -2,29 +2,38 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 import firebase_admin
 from firebase_admin import credentials, auth, firestore
 import os
+import json
 
 # --- On importe nos bibliothèques personnelles ---
 from analyse_loto import lancer_analyse_complete
-# La collecte se fera via un autre service (Cron Job), mais on garde la fonction pour un appel manuel
 from cron_update_firestore import lancer_collecte_vers_firestore
 
 # --- INITIALISATION DE L'APPLICATION FLASK ---
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# --- INITIALISATION DE FIREBASE ---
+# --- INITIALISATION DE FIREBASE (Version finale et robuste) ---
 if not firebase_admin._apps:
     try:
-        if os.path.exists("serviceAccountKey.json"):
+        creds_json_str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        if creds_json_str:
+            cred_dict = json.loads(creds_json_str)
+            cred = credentials.Certificate(cred_dict)
+            print("Initialisation Firebase avec les identifiants de l'environnement.")
+        elif os.path.exists("serviceAccountKey.json"):
             cred = credentials.Certificate("serviceAccountKey.json")
-            firebase_admin.initialize_app(cred)
+            print("Initialisation Firebase avec la clé de service locale.")
         else:
-            firebase_admin.initialize_app()
+            raise ValueError("Aucune clé de service Firebase trouvée.")
+        
+        firebase_admin.initialize_app(cred)
         db = firestore.client()
         print("✅ Connexion à Firebase réussie pour l'app web.")
     except Exception as e:
         print(f"❌ ERREUR CRITIQUE DANS APP.PY : Impossible d'initialiser Firebase. {e}")
         db = None
+else:
+    db = firestore.client()
 
 # --- ROUTES DE L'APPLICATION ---
 
@@ -36,7 +45,7 @@ def login():
 
     if request.method == 'POST':
         email = request.form['email']
-        password = request.form['password'] # Mot de passe non vérifié par le SDK Admin
+        password = request.form['password']
         
         if not db:
             flash("Erreur serveur : la base de données n'est pas connectée.", "error")
@@ -44,11 +53,7 @@ def login():
 
         try:
             user = auth.get_user_by_email(email)
-            # ATTENTION: Le SDK Admin ne peut pas vérifier le mot de passe.
-            # C'est une limitation connue. Pour une application en production
-            # avec de vrais utilisateurs, il faudrait utiliser le SDK client (JavaScript)
-            # pour une authentification sécurisée côté client.
-            # Pour notre cas (accès restreint), on fait confiance à l'email.
+            # Pour notre cas, on fait confiance à l'email pour la connexion.
             
             session['user_uid'] = user.uid
             session['user_email'] = user.email
