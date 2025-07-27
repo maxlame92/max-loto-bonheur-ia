@@ -1,3 +1,8 @@
+# Fichiers secrets
 serviceAccountKey.json
+settings.py
+
+# Fichiers de cache et temporaires
 __pycache__/
 *.pyc
+.env

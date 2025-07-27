@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-# Ce script est destiné à être exécuté dans un environnement cloud pour mettre à jour Firestore.
+# Ce fichier est une bibliothèque de fonctions conçue pour mettre à jour Firestore.
+# Il est appelé par l'application web (pour la mise à jour manuelle)
+# et sera appelé par le Cron Job (pour la mise à jour automatique).
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -9,28 +11,38 @@ import re
 import os
 import json
 
-# --- INITIALISATION DE FIREBASE (Version finale et robuste) ---
+# --- On importe nos secrets ---
+# Cette structure permet au code de fonctionner localement et sur le serveur
+try:
+    import settings
+    SECRETS_DISPONIBLES = True
+except ImportError:
+    SECRETS_DISPONIBLES = False
+    print("Avertissement : Fichier settings.py non trouvé. L'initialisation se basera sur les variables d'environnement.")
+
+# --- INITIALISATION DE FIREBASE ---
+db = None
 if not firebase_admin._apps:
     try:
-        # Essayer de lire la variable d'environnement JSON (pour Render)
-        creds_json_str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        if creds_json_str:
-            cred_dict = json.loads(creds_json_str)
-            cred = credentials.Certificate(cred_dict)
-            print("Initialisation Firebase avec les identifiants de l'environnement.")
-        # Sinon, essayer de lire le fichier local (pour les tests sur votre machine)
-        elif os.path.exists("serviceAccountKey.json"):
-            cred = credentials.Certificate("serviceAccountKey.json")
-            print("Initialisation Firebase avec la clé de service locale.")
+        # Priorité au fichier settings.py (pour l'exécution locale et la clarté)
+        if SECRETS_DISPONIBLES:
+            cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
+            print("Initialisation Firebase avec les secrets depuis settings.py.")
+        # Sinon, on tente la méthode pour Render (variables d'environnement)
         else:
-            raise ValueError("Aucune clé de service Firebase trouvée (ni variable d'env, ni fichier).")
+            creds_json_str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if creds_json_str:
+                cred_dict = json.loads(creds_json_str)
+                cred = credentials.Certificate(cred_dict)
+                print("Initialisation Firebase avec les identifiants de l'environnement.")
+            else:
+                raise ValueError("Aucune clé de service Firebase trouvée.")
         
         firebase_admin.initialize_app(cred)
         db = firestore.client()
         print("✅ Connexion à Firebase réussie.")
     except Exception as e:
         print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
-        db = None
 else:
     db = firestore.client()
 
@@ -98,6 +110,7 @@ def parse_and_transform(api_data):
                 for draw in draw_results.get(draw_type, []):
                     parsed = parse_draw_data(draw, date_str, current_year)
                     if parsed: all_draws.append(parsed)
+    print(f"-> {len(all_draws)} tirages valides extraits de la réponse API.")
     return all_draws
 
 def lancer_collecte_vers_firestore():
@@ -105,7 +118,7 @@ def lancer_collecte_vers_firestore():
     if not db:
         return "Erreur : La connexion à Firestore n'a pas pu être établie."
 
-    print("--- Lancement de la collecte vers Firestore ---")
+    print("\n--- Lancement de la collecte vers Firestore ---")
     
     api_data = get_latest_data_from_api()
     nouveaux_tirages = parse_and_transform(api_data)
@@ -126,6 +139,7 @@ def lancer_collecte_vers_firestore():
         return message
         
     ids_existants = set()
+    print("-> Vérification des tirages existants dans Firestore (par lots de 30)...")
     for i in range(0, len(ids_a_verifier), 30):
         chunk = ids_a_verifier[i:i + 30]
         docs_existants_chunk = collection_ref.where('__name__', "in", chunk).stream()
@@ -140,11 +154,13 @@ def lancer_collecte_vers_firestore():
             nouveaux_ajouts += 1
             operations_count += 1
             if operations_count >= 499:
+                print(f"   -> Envoi d'un lot de {operations_count} documents...")
                 batch.commit()
                 batch = db.batch()
                 operations_count = 0
 
     if operations_count > 0:
+        print(f"   -> Envoi du dernier lot de {operations_count} documents...")
         batch.commit()
     
     if nouveaux_ajouts > 0:
@@ -156,4 +172,6 @@ def lancer_collecte_vers_firestore():
     return message
 
 if __name__ == '__main__':
+    # Cette partie permet de lancer le script directement depuis la console pour un test
+    print("Lancement du script en mode exécution directe pour test.")
     lancer_collecte_vers_firestore()

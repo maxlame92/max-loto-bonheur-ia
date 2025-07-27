@@ -10,28 +10,34 @@ import os
 from datetime import datetime
 import re
 
+# --- On importe nos secrets ---
+try:
+    import settings
+    SECRETS_DISPONIBLES = True
+except ImportError:
+    SECRETS_DISPONIBLES = False
+    print("Avertissement : Fichier settings.py non trouvé. L'API IA et Firebase seront désactivés.")
+
+# --- INITIALISATION DE FIREBASE (nouvelle méthode) ---
+db = None
+if SECRETS_DISPONIBLES:
+    if not firebase_admin._apps:
+        try:
+            cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            print("✅ Connexion à Firebase réussie.")
+        except Exception as e:
+            print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
+    else:
+        db = firestore.client()
+
+# --- Imports IA ---
 try:
     import google.generativeai as genai
     IA_DISPONIBLE = True
 except ImportError:
     IA_DISPONIBLE = False
-    print("Avertissement : Le module 'google.generativeai' n'est pas installé. L'IA sera désactivée.")
-
-# --- INITIALISATION DE FIREBASE ---
-if not firebase_admin._apps:
-    try:
-        if os.path.exists("serviceAccountKey.json"):
-            cred = credentials.Certificate("serviceAccountKey.json")
-            firebase_admin.initialize_app(cred)
-        else:
-            firebase_admin.initialize_app()
-        db = firestore.client()
-        print("✅ Connexion à Firebase réussie.")
-    except Exception as e:
-        print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
-        db = None
-else:
-    db = firestore.client()
 
 # --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
@@ -39,10 +45,6 @@ FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
 
 # --- FONCTIONS ---
-def nettoyer_numeros_str(numeros_str):
-    if not isinstance(numeros_str, str): return []
-    return [int(n.strip()) for n in numeros_str.split(',') if n.strip().isdigit()]
-
 def lire_tirages_depuis_firestore():
     if not db: return None
     print("-> Lecture des tirages depuis Firestore...")
@@ -55,8 +57,7 @@ def lire_tirages_depuis_firestore():
             gagnants, machine = data.get('gagnants', []), data.get('machine', [])
             numeros_sortis = set(gagnants + machine)
             date_obj = data.get('date_obj')
-            if isinstance(date_obj, str):
-                date_obj = datetime.fromisoformat(date_obj)
+            if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
             tirages.append({
                 "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
                 "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
@@ -111,7 +112,6 @@ def calculer_forme_et_ecart(tous_les_tirages, fenetre=FENETRE_FORME_ECART):
     return forme_ecart_data
 
 def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles):
-    # (fonction inchangée)
     nums_dernier_tirage = dernier_tirage['numeros_sortis']
     scores_candidats = Counter()
     for numero in nums_dernier_tirage:
@@ -144,10 +144,11 @@ def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data
     return prompt
 
 def appeler_ia_gemini(prompt):
+    if not (IA_DISPONIBLE and SECRETS_DISPONIBLES):
+        return "ERREUR: Module IA ou fichier de secrets non disponible."
     try:
-        api_key = os.environ.get("GOOGLE_API_KEY")
-        if not api_key:
-            return "ERREUR : Clé d'API GOOGLE_API_KEY non trouvée dans les variables d'environnement."
+        api_key = settings.GOOGLE_API_KEY
+        if not api_key: return "ERREUR : Clé GOOGLE_API_KEY non trouvée dans settings.py"
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(prompt, request_options={'timeout': 100})
@@ -155,39 +156,31 @@ def appeler_ia_gemini(prompt):
     except Exception as e:
         return f"Erreur API Gemini: {e}"
 
-# --- NOUVELLE FONCTION D'EXTRACTION ---
 def extraire_prediction_finale(texte_ia):
-    """Extrait uniquement la ligne de prédiction finale du texte de l'IA."""
     try:
         lignes = texte_ia.splitlines()
         for i, ligne in enumerate(lignes):
-            # Cible les lignes comme "**Prédiction Finale: [90, 85]**" ou "sont : 90 et 85"
             if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
                 prediction_text = ligne
-                # Essayer de capturer les numéros dans cette ligne
                 numeros = re.findall(r'\b\d{1,2}\b', prediction_text)
-                if len(numeros) >= 2:
-                    return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
-        # Plan B si le formatage est différent
+                if len(numeros) >= 2: return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
         numeros_gras = re.findall(r'\*\*(\d{1,2})\*\*', texte_ia)
-        if len(numeros_gras) >= 2:
-            return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        if len(numeros_gras) >= 2: return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
         return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."
 
-# --- FONCTION PRINCIPALE ---
 def lancer_analyse_complete():
     """Exécute tout le pipeline en utilisant Firestore et retourne les résultats."""
     print("--- Lancement de l'analyse complète (version Firestore) ---")
+    if not db:
+        return {"erreur": "La connexion à la base de données Firestore a échoué."}
     
     base_connaissance = lire_base_connaissance_depuis_firestore()
     tous_les_tirages = lire_tirages_depuis_firestore()
     
-    if not tous_les_tirages:
-        return {"erreur": "Le chargement des tirages depuis Firestore a échoué."}
-    if not base_connaissance:
-        return {"erreur": "Le chargement de la base de connaissance depuis Firestore a échoué."}
+    if not tous_les_tirages: return {"erreur": "Le chargement des tirages depuis Firestore a échoué."}
+    if not base_connaissance: return {"erreur": "Le chargement de la base de connaissance depuis Firestore a échoué."}
 
     rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
@@ -198,17 +191,10 @@ def lancer_analyse_complete():
     machine_str = ",".join(map(str, dernier_tirage.get('machine', [])))
     contexte_str = f"{dernier_tirage['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\""
 
-    if IA_DISPONIBLE:
-        prompt = generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles)
-        reponse_ia = appeler_ia_gemini(prompt)
-        prediction_simple = extraire_prediction_finale(reponse_ia)
-    else:
-        reponse_ia = "Module IA (google-generativeai) non disponible."
-        prediction_simple = "N/A"
+    reponse_ia = appeler_ia_gemini(generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles))
+    prediction_simple = extraire_prediction_finale(reponse_ia)
 
     return {
-        "contexte": contexte_str,
-        "reponse_ia": reponse_ia,
-        "prediction_simple": prediction_simple,
-        "erreur": None
+        "contexte": contexte_str, "reponse_ia": reponse_ia,
+        "prediction_simple": prediction_simple, "erreur": None
     }
