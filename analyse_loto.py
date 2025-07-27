@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-# Ce fichier est maintenant une bibliothèque de fonctions.
+# Ce fichier est une bibliothèque de fonctions qui lit depuis Firestore.
 
-import csv
+import firebase_admin
+from firebase_admin import credentials, firestore
 from collections import defaultdict, Counter
 import time
 import json
 import os
 from datetime import datetime
-import pandas as pd
 import re
 
 try:
@@ -15,61 +15,67 @@ try:
     IA_DISPONIBLE = True
 except ImportError:
     IA_DISPONIBLE = False
+    print("Avertissement : Le module 'google.generativeai' n'est pas installé. L'IA sera désactivée.")
 
-# --- CONFIGURATIONS ET PARAMÈTRES ---
-NOM_FICHIER_DONNEES = "resultats_loto_bonheur_COMPLET.csv"
-NOM_FICHIER_BASE_CONNAISSANCE = "base de numero et cest accompagne.txt"
+# --- INITIALISATION DE FIREBASE ---
+if not firebase_admin._apps:
+    try:
+        if os.path.exists("serviceAccountKey.json"):
+            cred = credentials.Certificate("serviceAccountKey.json")
+            firebase_admin.initialize_app(cred)
+        else:
+            firebase_admin.initialize_app()
+        db = firestore.client()
+        print("✅ Connexion à Firebase réussie.")
+    except Exception as e:
+        print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
+        db = None
+else:
+    db = firestore.client()
+
+# --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
 FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
 
-# --- FONCTIONS DE TRAITEMENT ET D'ANALYSE ---
+# --- FONCTIONS ---
 def nettoyer_numeros_str(numeros_str):
     if not isinstance(numeros_str, str): return []
     return [int(n.strip()) for n in numeros_str.split(',') if n.strip().isdigit()]
 
-def lire_base_connaissance(nom_fichier):
-    base_connaissance = {}
-    if not os.path.exists(nom_fichier):
-        print(f"-> Fichier connaissance non trouvé: {nom_fichier}")
-        return None
+def lire_tirages_depuis_firestore():
+    if not db: return None
+    print("-> Lecture des tirages depuis Firestore...")
     try:
-        with open(nom_fichier, mode='r', encoding='utf-8') as f:
-            for ligne in f:
-                if "numero:" in ligne and "accompagnateur:" in ligne:
-                    partie_numero, partie_acc = ligne.split("accompagnateur:")
-                    base_connaissance[int(partie_numero.replace("numero:", "").strip())] = set(nettoyer_numeros_str(partie_acc))
+        tirages_ref = db.collection('tirages').order_by('date_obj', direction=firestore.Query.DESCENDING).limit(5000)
+        docs = tirages_ref.stream()
+        tirages = []
+        for doc in docs:
+            data = doc.to_dict()
+            gagnants, machine = data.get('gagnants', []), data.get('machine', [])
+            numeros_sortis = set(gagnants + machine)
+            date_obj = data.get('date_obj')
+            if isinstance(date_obj, str):
+                date_obj = datetime.fromisoformat(date_obj)
+            tirages.append({
+                "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
+                "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
+            })
+        print(f"-> {len(tirages)} tirages chargés depuis Firestore.")
+        return sorted(tirages, key=lambda x: x['date_obj'])
+    except Exception as e:
+        print(f"❌ Erreur lecture tirages Firestore : {e}"); return None
+
+def lire_base_connaissance_depuis_firestore():
+    if not db: return None
+    print("-> Lecture de la base de connaissance depuis Firestore...")
+    try:
+        docs = db.collection('connaissance').stream()
+        base_connaissance = {int(doc.id): set(doc.to_dict().get('accompagnateurs', [])) for doc in docs}
+        print(f"-> {len(base_connaissance)} règles de connaissance chargées.")
         return base_connaissance
     except Exception as e:
-        print(f"-> Erreur lecture base connaissance: {e}")
-        return None
-
-def lire_tirages_enrichis(nom_fichier):
-    tirages = []
-    if not os.path.exists(nom_fichier):
-        print(f"-> Fichier historique non trouvé: {nom_fichier}")
-        return None
-    try:
-        with open(nom_fichier, mode='r', encoding='utf-8-sig') as f:
-            for ligne in csv.DictReader(f):
-                date_str = ligne.get("date_complete")
-                if not date_str: continue
-                try:
-                    date_obj = pd.to_datetime(date_str, format='mixed', dayfirst=True).to_pydatetime()
-                except (ValueError, TypeError): continue
-                gagnants = nettoyer_numeros_str(ligne.get("numeros_gagnants"))
-                machine = nettoyer_numeros_str(ligne.get("numeros_machine"))
-                numeros_sortis = set(gagnants + machine)
-                if not numeros_sortis: continue
-                tirages.append({
-                    "date_obj": date_obj, "nom_du_tirage": ligne.get("nom_du_tirage"),
-                    "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
-                })
-        tirages.sort(key=lambda x: x['date_obj'])
-        return tirages
-    except Exception as e:
-        print(f"-> Erreur lecture historique: {e}")
-        return None
+        print(f"❌ Erreur lecture connaissance Firestore : {e}"); return None
 
 def analyser_affinites_temporelles(tous_les_tirages, date_cible):
     jour_cible, mois_cible = date_cible.day, date_cible.month
@@ -105,6 +111,7 @@ def calculer_forme_et_ecart(tous_les_tirages, fenetre=FENETRE_FORME_ECART):
     return forme_ecart_data
 
 def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles):
+    # (fonction inchangée)
     nums_dernier_tirage = dernier_tirage['numeros_sortis']
     scores_candidats = Counter()
     for numero in nums_dernier_tirage:
@@ -138,34 +145,49 @@ def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data
 
 def appeler_ia_gemini(prompt):
     try:
-        # Sur Render, les secrets sont dans les variables d'environnement
         api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
-            # Si la clé n'est pas dans l'environnement, essayer le fichier .env local
-            from dotenv import load_dotenv
-            load_dotenv()
-            api_key = os.getenv("GOOGLE_API_KEY")
-
-        if not api_key:
-            return "ERREUR : Clé d'API GOOGLE_API_KEY non trouvée."
-        
+            return "ERREUR : Clé d'API GOOGLE_API_KEY non trouvée dans les variables d'environnement."
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.5-flash')
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, request_options={'timeout': 100})
         return response.text
     except Exception as e:
         return f"Erreur API Gemini: {e}"
 
-# --- LA FONCTION PRINCIPALE QUE L'ON VA IMPORTER ---
+# --- NOUVELLE FONCTION D'EXTRACTION ---
+def extraire_prediction_finale(texte_ia):
+    """Extrait uniquement la ligne de prédiction finale du texte de l'IA."""
+    try:
+        lignes = texte_ia.splitlines()
+        for i, ligne in enumerate(lignes):
+            # Cible les lignes comme "**Prédiction Finale: [90, 85]**" ou "sont : 90 et 85"
+            if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
+                prediction_text = ligne
+                # Essayer de capturer les numéros dans cette ligne
+                numeros = re.findall(r'\b\d{1,2}\b', prediction_text)
+                if len(numeros) >= 2:
+                    return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
+        # Plan B si le formatage est différent
+        numeros_gras = re.findall(r'\*\*(\d{1,2})\*\*', texte_ia)
+        if len(numeros_gras) >= 2:
+            return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
+    except Exception:
+        return "Erreur lors de l'extraction de la prédiction."
+
+# --- FONCTION PRINCIPALE ---
 def lancer_analyse_complete():
-    """Exécute tout le pipeline d'analyse et retourne les résultats."""
-    print("--- Lancement de l'analyse complète (version web) ---")
+    """Exécute tout le pipeline en utilisant Firestore et retourne les résultats."""
+    print("--- Lancement de l'analyse complète (version Firestore) ---")
     
-    base_connaissance = lire_base_connaissance(NOM_FICHIER_BASE_CONNAISSANCE)
-    tous_les_tirages = lire_tirages_enrichis(NOM_FICHIER_DONNEES)
+    base_connaissance = lire_base_connaissance_depuis_firestore()
+    tous_les_tirages = lire_tirages_depuis_firestore()
     
     if not tous_les_tirages:
-        return {"erreur": "Le chargement des tirages a échoué. Lancez une mise à jour des données."}
+        return {"erreur": "Le chargement des tirages depuis Firestore a échoué."}
+    if not base_connaissance:
+        return {"erreur": "Le chargement de la base de connaissance depuis Firestore a échoué."}
 
     rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
@@ -179,11 +201,14 @@ def lancer_analyse_complete():
     if IA_DISPONIBLE:
         prompt = generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles)
         reponse_ia = appeler_ia_gemini(prompt)
+        prediction_simple = extraire_prediction_finale(reponse_ia)
     else:
-        reponse_ia = "Module IA (google-generativeai) non disponible ou clé d'API manquante."
+        reponse_ia = "Module IA (google-generativeai) non disponible."
+        prediction_simple = "N/A"
 
     return {
         "contexte": contexte_str,
         "reponse_ia": reponse_ia,
+        "prediction_simple": prediction_simple,
         "erreur": None
     }

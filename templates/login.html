@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connexion - Analyse Loto</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { text-align: center; background: white; padding: 40px 50px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 100%; max-width: 400px; }
+        h1 { color: #5a2a99; margin-bottom: 30px; }
+        .flash-error { padding: 15px; background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; border-radius: 5px; margin-bottom: 20px; text-align: left; }
+        form { display: flex; flex-direction: column; gap: 15px; }
+        input { padding: 15px; font-size: 1em; border: 1px solid #ddd; border-radius: 5px; }
+        button { background-color: #5a2a99; color: white; border: none; padding: 15px; font-size: 1.1em; border-radius: 5px; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #48227a; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Connexion</h1>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    {% if category == 'error' %}
+                        <div class="flash-error">{{ message }}</div>
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form method="post">
+            <input type="email" name="email" placeholder="Votre email" required>
+            <input type="password" name="password" placeholder="Mot de passe" required>
+            <button type="submit">Se Connecter</button>
+        </form>
+    </div>
+</body>
+</html>
