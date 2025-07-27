@@ -10,27 +10,40 @@ import os
 from datetime import datetime
 import re
 
-# --- On importe nos secrets ---
+# --- On importe nos secrets (si le fichier existe) ---
 try:
     import settings
     SECRETS_DISPONIBLES = True
 except ImportError:
     SECRETS_DISPONIBLES = False
-    print("Avertissement : Fichier settings.py non trouvé. L'API IA et Firebase seront désactivés.")
 
-# --- INITIALISATION DE FIREBASE (nouvelle méthode) ---
+# --- VARIABLE GLOBALE POUR LA DB (initialisée à None) ---
 db = None
-if SECRETS_DISPONIBLES:
-    if not firebase_admin._apps:
+
+def init_firestore():
+    """Initialise la connexion à Firestore si elle n'est pas déjà faite."""
+    global db
+    if db is None and not firebase_admin._apps:
+        print("Tentative d'initialisation de Firebase pour l'analyse...")
         try:
-            cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-            firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            print("✅ Connexion à Firebase réussie.")
+            if SECRETS_DISPONIBLES:
+                cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
+                firebase_admin.initialize_app(cred)
+                db = firestore.client()
+                print("✅ Connexion à Firebase réussie via settings.py.")
+                return True
+            else:
+                print("Fichier settings.py non trouvé, tentative avec les variables d'environnement...")
+                firebase_admin.initialize_app()
+                db = firestore.client()
+                print("✅ Connexion à Firebase réussie via l'environnement.")
+                return True
         except Exception as e:
             print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
-    else:
+            return False
+    elif db is None and firebase_admin._apps:
         db = firestore.client()
+    return True
 
 # --- Imports IA ---
 try:
@@ -172,10 +185,10 @@ def extraire_prediction_finale(texte_ia):
 
 def lancer_analyse_complete():
     """Exécute tout le pipeline en utilisant Firestore et retourne les résultats."""
-    print("--- Lancement de l'analyse complète (version Firestore) ---")
-    if not db:
+    if not init_firestore():
         return {"erreur": "La connexion à la base de données Firestore a échoué."}
     
+    print("--- Lancement de l'analyse complète (version Firestore) ---")
     base_connaissance = lire_base_connaissance_depuis_firestore()
     tous_les_tirages = lire_tirages_depuis_firestore()
     
