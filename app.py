@@ -4,6 +4,10 @@ from firebase_admin import credentials, auth, firestore
 import os
 import json
 
+# --- On importe nos bibliothèques personnelles ---
+from analyse_loto import lancer_analyse_complete
+from cron_update_firestore import lancer_collecte_vers_firestore
+
 # --- On importe les secrets ---
 try:
     import settings
@@ -11,24 +15,30 @@ try:
 except ImportError:
     SECRETS_DISPONIBLES = False
 
+# --- INITIALISATION DE L'APPLICATION FLASK ---
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# --- INITIALISATION DE FIREBASE (tentative au démarrage de l'app) ---
-db = None
-try:
-    if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
-        cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("✅ TEST FIREBASE APP.PY : Connexion à Firebase réussie au démarrage.")
-    else:
-        print("❌ TEST FIREBASE APP.PY : Fichier settings.py ou secrets non trouvés.")
-        db = None # Force db à None si les secrets manquent
-except Exception as e:
-    print(f"❌ ERREUR CRITIQUE DANS APP.PY : Impossible d'initialiser Firebase. {e}")
-    db = None
-
+# --- FONCTION GARANTISSANT LA CONNEXION À FIREBASE ---
+def get_db():
+    """
+    Initialise Firebase si ce n'est pas déjà fait et retourne le client de la base de données.
+    C'est la méthode la plus robuste.
+    """
+    if not firebase_admin._apps:
+        print("Tentative d'initialisation de Firebase...")
+        try:
+            if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
+                cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
+                firebase_admin.initialize_app(cred)
+                print("✅ Connexion à Firebase réussie via settings.py.")
+            else:
+                raise ValueError("Fichier settings.py ou secrets non trouvés.")
+        except Exception as e:
+            print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
+            return None # Retourne None si l'initialisation échoue
+    
+    return firestore.client()
 
 # --- ROUTES DE L'APPLICATION ---
 @app.route('/', methods=['GET', 'POST'])
@@ -37,26 +47,24 @@ def login():
         return redirect(url_for('dashboard'))
 
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        
-        # Pas besoin d'initialiser ici, on a déjà fait la tentative au démarrage
-        if not db: # Si db est toujours None, c'est que l'initialisation a échoué
-            flash("Erreur serveur : La connexion à Firebase a échoué au démarrage. Contactez l'administrateur.", "error")
+        db = get_db() # On s'assure que la connexion est active
+        if not db:
+            flash("Erreur serveur : la base de données n'est pas disponible.", "error")
             return render_template('login.html')
 
+        email = request.form['email']
+        password = request.form['password']
         try:
-            # Vérifie juste si l'utilisateur existe dans Authentication
             user = auth.get_user_by_email(email)
-            
-            # Ici, on ne s'occupe plus du rôle pour l'instant, juste de savoir si l'authentification marche
             session['user_uid'] = user.uid
             session['user_email'] = user.email
-            session['is_admin'] = False # On met False par défaut pour l'instant
+            
+            user_role_doc = db.collection('users').document(user.uid).get()
+            session['is_admin'] = user_role_doc.exists and user_role_doc.to_dict().get('role') == 'admin'
 
             return redirect(url_for('dashboard'))
         except auth.UserNotFoundError:
-            flash("Utilisateur non trouvé. Vérifiez l'email.", "error")
+            flash("Utilisateur non trouvé. Veuillez vérifier votre email.", "error")
         except Exception as e:
             flash(f"Une erreur est survenue lors de la connexion : {e}", "error")
             
@@ -69,13 +77,19 @@ def dashboard():
 
 @app.route('/analyser', methods=['POST'])
 def analyser():
-    flash("L'analyse est désactivée pour le diagnostic.", "info")
-    return redirect(url_for('dashboard')) # Désactive l'analyse pour le diagnostic
+    if 'user_uid' not in session: return redirect(url_for('login'))
+    resultats = lancer_analyse_complete()
+    if session.get('is_admin'):
+        return render_template('resultat_admin.html', resultats=resultats)
+    else:
+        return render_template('resultat_user.html', resultats=resultats)
 
 @app.route('/mettre_a_jour', methods=['POST'])
 def mettre_a_jour():
-    flash("La mise à jour est désactivée pour le diagnostic.", "info")
-    return redirect(url_for('dashboard')) # Désactive la mise à jour
+    if not session.get('is_admin'):
+        flash("Accès non autorisé.", "error"); return redirect(url_for('dashboard'))
+    message = lancer_collecte_vers_firestore()
+    flash(message); return redirect(url_for('dashboard'))
 
 @app.route('/logout')
 def logout():
