@@ -26,18 +26,23 @@ def init_firestore():
     if db is None and not firebase_admin._apps:
         print("Tentative d'initialisation de Firebase pour l'analyse...")
         try:
-            if SECRETS_DISPONIBLES:
+            if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
                 cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
                 firebase_admin.initialize_app(cred)
                 db = firestore.client()
                 print("✅ Connexion à Firebase réussie via settings.py.")
                 return True
             else:
-                print("Fichier settings.py non trouvé, tentative avec les variables d'environnement...")
-                firebase_admin.initialize_app()
-                db = firestore.client()
-                print("✅ Connexion à Firebase réussie via l'environnement.")
-                return True
+                creds_json_str = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+                if creds_json_str:
+                    cred_dict = json.loads(creds_json_str)
+                    cred = credentials.Certificate(cred_dict)
+                    firebase_admin.initialize_app(cred)
+                    db = firestore.client()
+                    print("✅ Connexion à Firebase réussie via l'environnement.")
+                    return True
+                else:
+                    raise ValueError("Aucune clé de service Firebase trouvée.")
         except Exception as e:
             print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
             return False
@@ -69,12 +74,9 @@ def lire_tirages_depuis_firestore():
             data = doc.to_dict()
             gagnants, machine = data.get('gagnants', []), data.get('machine', [])
             numeros_sortis = set(gagnants + machine)
-            date_obj = data.get('date_obj')
+            date_obj = data.get('date_obj');
             if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
-            tirages.append({
-                "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
-                "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
-            })
+            tirages.append({"date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"), "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)})
         print(f"-> {len(tirages)} tirages chargés depuis Firestore.")
         return sorted(tirages, key=lambda x: x['date_obj'])
     except Exception as e:
@@ -177,8 +179,10 @@ def extraire_prediction_finale(texte_ia):
                 prediction_text = ligne
                 numeros = re.findall(r'\b\d{1,2}\b', prediction_text)
                 if len(numeros) >= 2: return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
-        numeros_gras = re.findall(r'\*\*(\d{1,2})\*\*', texte_ia)
-        if len(numeros_gras) >= 2: return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        numeros_gras = re.findall(r'\*\*\s*(\d{1,2})\s*\*\*|\[\s*(\d{1,2})\s*\]', texte_ia)
+        if len(numeros_gras) >= 2:
+            nums = [n[0] or n[1] for n in numeros_gras]
+            return f"Les numéros prédits sont : {nums[0]} et {nums[1]}"
         return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."

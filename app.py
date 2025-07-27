@@ -7,10 +7,10 @@ import os
 try:
     from analyse_loto import lancer_analyse_complete
     from cron_update_firestore import lancer_collecte_vers_firestore
-    ANALYSE_DISPONIBLE = True
+    MODULES_DISPONIBLES = True
 except ImportError as e:
     print(f"Erreur d'importation des modules locaux : {e}")
-    ANALYSE_DISPONIBLE = False
+    MODULES_DISPONIBLES = False
 
 # --- On importe les secrets ---
 try:
@@ -18,26 +18,19 @@ try:
     SECRETS_DISPONIBLES = True
 except ImportError:
     SECRETS_DISPONIBLES = False
-    print("Avertissement : Fichier settings.py non trouvé.")
-
 
 # --- INITIALISATION DE L'APPLICATION FLASK ---
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# --- INITIALISATION DE FIREBASE ---
+# --- INITIALISATION DE FIREBASE (ne se fait qu'une fois) ---
 db = None
-if SECRETS_DISPONIBLES:
-    if not firebase_admin._apps:
-        try:
-            cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-            firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            print("✅ Connexion à Firebase réussie pour l'app web.")
-        except Exception as e:
-            print(f"❌ ERREUR CRITIQUE DANS APP.PY : Impossible d'initialiser Firebase. {e}")
-else:
-    print("❌ L'application ne peut pas se connecter à Firebase car settings.py est manquant.")
+if not firebase_admin._apps:
+    try:
+        # La connexion est gérée par les scripts importés au moment de leur appel
+        print("L'initialisation de Firebase sera faite par les modules au besoin.")
+    except Exception as e:
+        print(f"Problème de configuration Firebase initial : {e}")
 
 # --- ROUTES DE L'APPLICATION ---
 @app.route('/', methods=['GET', 'POST'])
@@ -46,22 +39,25 @@ def login():
         return redirect(url_for('dashboard'))
     if request.method == 'POST':
         email = request.form['email']
-        password = request.form['password']
-        if not db:
-            flash("Erreur serveur : la base de données n'est pas connectée.", "error")
-            return render_template('login.html')
+        password = request.form['password'] # Mot de passe non vérifié par le SDK Admin
         try:
             user = auth.get_user_by_email(email)
-            # Pour notre cas (accès restreint), on ne vérifie pas le mot de passe ici.
             session['user_uid'] = user.uid
             session['user_email'] = user.email
+            
+            if db is None: # S'assurer que db est initialisé
+                from analyse_loto import init_firestore
+                init_firestore()
+            
             user_role_doc = db.collection('users').document(user.uid).get()
             session['is_admin'] = user_role_doc.exists and user_role_doc.to_dict().get('role') == 'admin'
+            
             return redirect(url_for('dashboard'))
         except auth.UserNotFoundError:
             flash("Utilisateur non trouvé.", "error")
         except Exception as e:
-            flash(f"Une erreur est survenue : {e}", "error")
+            flash(f"Une erreur est survenue lors de la connexion : {e}", "error")
+            
     return render_template('login.html')
 
 @app.route('/dashboard')
@@ -73,9 +69,8 @@ def dashboard():
 @app.route('/analyser', methods=['POST'])
 def analyser():
     if 'user_uid' not in session: return redirect(url_for('login'))
-    if not ANALYSE_DISPONIBLE:
-        flash("Erreur serveur : le module d'analyse est manquant.", "error")
-        return redirect(url_for('dashboard'))
+    if not MODULES_DISPONIBLES:
+        flash("Erreur serveur : le module d'analyse est manquant.", "error"); return redirect(url_for('dashboard'))
     resultats = lancer_analyse_complete()
     if session.get('is_admin'):
         return render_template('resultat_admin.html', resultats=resultats)
@@ -85,19 +80,15 @@ def analyser():
 @app.route('/mettre_a_jour', methods=['POST'])
 def mettre_a_jour():
     if not session.get('is_admin'):
-        flash("Accès non autorisé.", "error")
-        return redirect(url_for('dashboard'))
-    if not ANALYSE_DISPONIBLE:
-        flash("Erreur serveur : le module de collecte est manquant.", "error")
-        return redirect(url_for('dashboard'))
+        flash("Accès non autorisé.", "error"); return redirect(url_for('dashboard'))
+    if not MODULES_DISPONIBLES:
+        flash("Erreur serveur : le module de collecte est manquant.", "error"); return redirect(url_for('dashboard'))
     message = lancer_collecte_vers_firestore()
-    flash(message)
-    return redirect(url_for('dashboard'))
+    flash(message); return redirect(url_for('dashboard'))
 
 @app.route('/logout')
 def logout():
-    session.clear()
-    return redirect(url_for('login'))
+    session.clear(); return redirect(url_for('login'))
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0", port=5001)
