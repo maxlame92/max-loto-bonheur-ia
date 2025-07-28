@@ -97,7 +97,7 @@ def trigger_cron(secret_key):
     """
     # On vérifie que la clé secrète est correcte
     # Pour plus de sécurité, cette clé devrait être une variable d'environnement sur Render
-    CORRECT_KEY = "SMN#F4ka5fgw#?V" 
+    CORRECT_KEY = "Y8fa3biJ943AHy" 
     
     if secret_key != CORRECT_KEY:
         return "Clé invalide.", 403 # Accès interdit
