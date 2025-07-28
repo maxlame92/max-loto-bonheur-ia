@@ -88,6 +88,24 @@ def mettre_a_jour():
     message = lancer_collecte_vers_firestore()
     flash(message); return redirect(url_for('dashboard'))
 
+# Dans app.py, ajoutez cette fonction
+
+@app.route('/cron/<secret_key>')
+def trigger_cron(secret_key):
+    """
+    Route secrète pour déclencher la collecte de données via un service externe.
+    """
+    # On vérifie que la clé secrète est correcte
+    # Pour plus de sécurité, cette clé devrait être une variable d'environnement sur Render
+    CORRECT_KEY = "SMN#F4ka5fgw#?V" 
+    
+    if secret_key != CORRECT_KEY:
+        return "Clé invalide.", 403 # Accès interdit
+
+    print("--- Déclenchement du Cron Job manuel via URL ---")
+    message = lancer_collecte_vers_firestore()
+    return f"Tâche de collecte terminée. Résultat : {message}"
+
 @app.route('/logout')
 def logout():
     session.clear(); return redirect(url_for('login'))
