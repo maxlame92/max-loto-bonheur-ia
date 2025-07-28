@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Ce fichier est une bibliothèque de fonctions. Il ne gère plus la connexion à Firebase.
+# Ce fichier est une bibliothèque de fonctions. Il ne gère plus la connexion.
 
 from collections import defaultdict, Counter
 import time
@@ -21,16 +21,14 @@ try:
 except ImportError:
     SECRETS_DISPONIBLES = False
 
-# --- CONFIGURATIONS ---
+# --- PARAMÈTRES OPTIMISÉS (Suite à nos tests) ---
 FENETRE_RGNTC = 3
 FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
 
 # --- FONCTIONS ---
 def lire_tirages_depuis_firestore(db):
-    if not db:
-        print("❌ Erreur (analyse): la connexion DB n'a pas été fournie.")
-        return None
+    if not db: return None
     print("-> Lecture des tirages depuis Firestore...")
     try:
         tirages_ref = db.collection('tirages').order_by('date_obj', direction='DESCENDING').limit(5000)
@@ -41,8 +39,7 @@ def lire_tirages_depuis_firestore(db):
             gagnants, machine = data.get('gagnants', []), data.get('machine', [])
             numeros_sortis = set(gagnants + machine)
             date_obj = data.get('date_obj')
-            if isinstance(date_obj, str):
-                date_obj = datetime.fromisoformat(date_obj)
+            if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
             tirages.append({
                 "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
                 "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
@@ -53,9 +50,7 @@ def lire_tirages_depuis_firestore(db):
         print(f"❌ Erreur lecture tirages Firestore : {e}"); return None
 
 def lire_base_connaissance_depuis_firestore(db):
-    if not db:
-        print("❌ Erreur (analyse): la connexion DB n'a pas été fournie.")
-        return None
+    if not db: return None
     print("-> Lecture de la base de connaissance depuis Firestore...")
     try:
         docs = db.collection('connaissance').stream()
@@ -145,14 +140,15 @@ def appeler_ia_gemini(prompt):
 
 def extraire_prediction_finale(texte_ia):
     try:
-        lignes = texte_ia.splitlines()
-        for i, ligne in enumerate(lignes):
-            if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
-                prediction_text = ligne
-                numeros = re.findall(r'\b\d{1,2}\b', prediction_text)
-                if len(numeros) >= 2: return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
         numeros_gras = re.findall(r'\*\*\s*(\d{1,2})\s*\*\*', texte_ia)
-        if len(numeros_gras) >= 2: return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        if len(numeros_gras) >= 2:
+            return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        lignes = texte_ia.splitlines()
+        for ligne in lignes:
+            if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
+                numeros = re.findall(r'\b(\d{1,2})\b', ligne)
+                if len(numeros) >= 2:
+                    return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
         return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."
