@@ -12,7 +12,6 @@
         pre { background-color: #f8f9fa; border: 1px solid #eee; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 1.1em; line-height: 1.6; }
         .back-link { background-color: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px; transition: background-color 0.3s;}
         .back-link:hover { background-color: #5a6268; }
-        .heatmap-container img { width: 100%; max-width: 750px; border: 1px solid #ddd; border-radius: 5px; margin-top: 15px;}
     </style>
 </head>
 <body>
@@ -29,32 +28,6 @@
 
             <h2>🧠 Analyse Détaillée de l'IA 🧠</h2>
             <pre>{{ resultats.reponse_ia }}</pre>
-
-            <!-- SECTION POUR LES HEATMAPS AVEC DIAGNOSTIC -->
-            <hr style="margin-top: 40px; margin-bottom: 40px;">
-            <h2>📊 Visualisations (Heatmaps) 📊</h2>
-            {% if resultats.heatmaps and not resultats.heatmaps.erreur %}
-                <div class="heatmap-container">
-                    <h3>Compagnons</h3>
-                    <img src="{{ url_for('static', filename=resultats.heatmaps.compagnons) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Compagnons">
-                </div>
-                <div class="heatmap-container" style="margin-top: 30px;">
-                    <h3>Suiveurs</h3>
-                    <img src="{{ url_for('static', filename=resultats.heatmaps.suiveurs) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Suiveurs">
-                </div>
-                <div class="heatmap-container" style="margin-top: 30px;">
-                    <h3>Précurseurs</h3>
-                    <img src="{{ url_for('static', filename=resultats.heatmaps.precurseurs) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Précurseurs">
-                </div>
-            {% elif resultats.heatmaps and resultats.heatmaps.erreur %}
-                <p style="color: red;"><strong>Les heatmaps n'ont pas pu être générées.</strong></p>
-                <p>Voici l'erreur technique renvoyée par le serveur :</p>
-                <pre style="background-color: #f8d7da; color: #721c24;">{{ resultats.heatmaps.erreur }}</pre>
-            {% else %}
-                <p>Aucune donnée de heatmap disponible.</p>
-            {% endif %}
-            <!-- FIN DE LA SECTION -->
-
         {% endif %}
         
         <a href="{{ url_for('dashboard') }}" class="back-link">Retour au tableau de bord</a>

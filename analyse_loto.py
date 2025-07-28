@@ -11,20 +11,6 @@ from datetime import datetime, timedelta
 import re
 import pandas as pd
 
-# --- Imports pour la visualisation et l'IA ---
-try:
-    import matplotlib
-    # --- LIGNE DE CORRECTION CRUCIALE ---
-    # Force matplotlib à utiliser un backend non-interactif, nécessaire pour les serveurs
-    matplotlib.use('Agg') 
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    VISUALISATION_DISPONIBLE = True
-    ERREUR_VISUALISATION = None
-except Exception as e:
-    VISUALISATION_DISPONIBLE = False
-    ERREUR_VISUALISATION = str(e) # On stocke le message d'erreur précis
-
 try:
     import google.generativeai as genai
     IA_DISPONIBLE = True
@@ -48,30 +34,10 @@ except ImportError:
 # --- VARIABLE GLOBALE POUR LA DB ---
 db = None
 
-def init_firestore():
-    """Initialise la connexion à Firestore si elle n'est pas déjà faite."""
-    global db
-    if db is None and not firebase_admin._apps:
-        try:
-            if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
-                cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-                firebase_admin.initialize_app(cred)
-                db = firestore.client()
-                return True
-            else:
-                raise ValueError("Fichier settings.py ou secrets non trouvés.")
-        except Exception as e:
-            print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
-            return False
-    elif db is None and firebase_admin._apps:
-        db = firestore.client()
-    return True
-
 # --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
 FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
-TOP_N_HEATMAP = 25
 
 # --- FONCTIONS ---
 def detecter_prochain_tirage_et_contexte():
@@ -150,40 +116,6 @@ def calculer_forme_et_ecart(tous_les_tirages, fenetre=FENETRE_FORME_ECART):
         forme_ecart_data[numero] = {"forme": forme, "ecart": ecart}
     return forme_ecart_data
 
-def generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages):
-    if not VISUALISATION_DISPONIBLE:
-        print(f"-> Heatmaps ignorées. Erreur à l'import: {ERREUR_VISUALISATION}")
-        return {"erreur": f"Bibliothèques de visualisation non disponibles. Raison : {ERREUR_VISUALISATION}"}
-    print("-> Génération des heatmaps...")
-    static_folder = 'static'
-    if not os.path.exists(static_folder):
-        os.makedirs(static_folder)
-    freq_globale = Counter(num for t in tous_les_tirages for num in t['numeros_sortis'])
-    freqs_triees = freq_globale.most_common()
-    top_nums = [n for n, f in freqs_triees[:TOP_N_HEATMAP]]
-    chemins_images = {}
-    for type_relation in ['compagnons', 'suiveurs', 'precurseurs']:
-        matrice = pd.DataFrame(0, index=top_nums, columns=top_nums, dtype=int)
-        for num1 in top_nums:
-            if num1 in rapport_rgntc:
-                for num2, freq in rapport_rgntc[num1][type_relation]:
-                    if num2 in top_nums:
-                        if type_relation == 'compagnons':
-                            matrice.loc[num1, num2] = freq; matrice.loc[num2, num1] = freq
-                        else:
-                            matrice.loc[num1, num2] = freq
-        plt.figure(figsize=(18, 15))
-        sns.heatmap(matrice, annot=True, cmap="viridis", fmt="d", linewidths=.5)
-        titre = f"Heatmap des {type_relation.capitalize()} des {TOP_N_HEATMAP} Numéros les plus Fréquents"
-        plt.title(titre, fontsize=16)
-        nom_fichier = f'heatmap_{type_relation}.png'
-        chemin_fichier = os.path.join(static_folder, nom_fichier)
-        plt.savefig(chemin_fichier)
-        plt.close()
-        chemins_images[type_relation] = nom_fichier
-    print("-> Heatmaps sauvegardées avec succès.")
-    return chemins_images
-
 def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles):
     nums_dernier_tirage = dernier_tirage['numeros_sortis']
     scores_candidats = Counter()
@@ -242,12 +174,9 @@ def extraire_prediction_finale(texte_ia):
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."
 
-def lancer_analyse_complete(db_client):
-    """Exécute tout le pipeline, génère les heatmaps et retourne les résultats."""
-    global db
-    db = db_client
+def lancer_analyse_complete(db):
     if not db:
-        return {"erreur": "La connexion à la base de données n'est pas disponible."}
+        return {"erreur": "La connexion à la base de données n'est pas disponible pour l'analyse."}
     
     dernier_tirage_api, cible_tirage = detecter_prochain_tirage_et_contexte()
     if not dernier_tirage_api:
@@ -282,8 +211,6 @@ def lancer_analyse_complete(db_client):
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
     affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
     
-    chemins_heatmaps = generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages)
-
     gagnants_str = ",".join(map(str, dernier_tirage_contexte.get('gagnants', [])))
     machine_str = ",".join(map(str, dernier_tirage_contexte.get('machine', [])))
     contexte_str = f"{dernier_tirage_contexte['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage_contexte['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\""
@@ -294,8 +221,7 @@ def lancer_analyse_complete(db_client):
     resultat_final = {
         "contexte": contexte_str, "reponse_ia": reponse_ia,
         "prediction_simple": prediction_simple, "cible": cible_tirage,
-        "timestamp": datetime.now(), "erreur": None,
-        "heatmaps": chemins_heatmaps
+        "timestamp": datetime.now(), "erreur": None
     }
     
     print(f"Sauvegarde de l'analyse dans le cache avec l'ID : {id_cache}")
