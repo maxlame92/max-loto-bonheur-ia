@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
-# Ce fichier est une bibliothèque de fonctions qui lit depuis Firestore.
+# Ce fichier est une bibliothèque de fonctions. Il ne gère plus la connexion à Firebase.
 
-import firebase_admin
-from firebase_admin import credentials, firestore
 from collections import defaultdict, Counter
 import time
 import json
@@ -10,43 +8,18 @@ import os
 from datetime import datetime
 import re
 
-# --- On importe les secrets (si le fichier existe) ---
-try:
-    import settings
-    SECRETS_DISPONIBLES = True
-except ImportError:
-    SECRETS_DISPONIBLES = False
-
-# --- VARIABLE GLOBALE POUR LA DB (initialisée à None) ---
-db = None
-
-def init_firestore():
-    """Initialise la connexion à Firestore si elle n'est pas déjà faite."""
-    global db
-    if db is None and not firebase_admin._apps:
-        print("Tentative d'initialisation de Firebase pour l'analyse...")
-        try:
-            if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
-                cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-                firebase_admin.initialize_app(cred)
-                db = firestore.client()
-                print("✅ Connexion à Firebase réussie via settings.py.")
-                return True
-            else:
-                raise ValueError("Fichier settings.py ou secrets non trouvés.")
-        except Exception as e:
-            print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
-            return False
-    elif db is None and firebase_admin._apps:
-        db = firestore.client()
-    return True
-
-# --- Imports IA ---
 try:
     import google.generativeai as genai
     IA_DISPONIBLE = True
 except ImportError:
     IA_DISPONIBLE = False
+
+# --- On importe les secrets ---
+try:
+    import settings
+    SECRETS_DISPONIBLES = True
+except ImportError:
+    SECRETS_DISPONIBLES = False
 
 # --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
@@ -54,11 +27,13 @@ FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
 
 # --- FONCTIONS ---
-def lire_tirages_depuis_firestore():
-    if not db: return None
+def lire_tirages_depuis_firestore(db):
+    if not db:
+        print("❌ Erreur (analyse): la connexion DB n'a pas été fournie.")
+        return None
     print("-> Lecture des tirages depuis Firestore...")
     try:
-        tirages_ref = db.collection('tirages').order_by('date_obj', direction=firestore.Query.DESCENDING).limit(5000)
+        tirages_ref = db.collection('tirages').order_by('date_obj', direction='DESCENDING').limit(5000)
         docs = tirages_ref.stream()
         tirages = []
         for doc in docs:
@@ -66,15 +41,21 @@ def lire_tirages_depuis_firestore():
             gagnants, machine = data.get('gagnants', []), data.get('machine', [])
             numeros_sortis = set(gagnants + machine)
             date_obj = data.get('date_obj')
-            if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
-            tirages.append({"date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"), "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)})
+            if isinstance(date_obj, str):
+                date_obj = datetime.fromisoformat(date_obj)
+            tirages.append({
+                "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
+                "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
+            })
         print(f"-> {len(tirages)} tirages chargés depuis Firestore.")
         return sorted(tirages, key=lambda x: x['date_obj'])
     except Exception as e:
         print(f"❌ Erreur lecture tirages Firestore : {e}"); return None
 
-def lire_base_connaissance_depuis_firestore():
-    if not db: return None
+def lire_base_connaissance_depuis_firestore(db):
+    if not db:
+        print("❌ Erreur (analyse): la connexion DB n'a pas été fournie.")
+        return None
     print("-> Lecture de la base de connaissance depuis Firestore...")
     try:
         docs = db.collection('connaissance').stream()
@@ -162,52 +143,28 @@ def appeler_ia_gemini(prompt):
     except Exception as e:
         return f"Erreur API Gemini: {e}"
 
-# --- FONCTION D'EXTRACTION MISE À JOUR ---
 def extraire_prediction_finale(texte_ia):
-    """Extrait les 2 numéros prédits du texte de l'IA, de manière robuste."""
     try:
-        # Méthode 1: Chercher les numéros en gras (ex: **90** et **85**)
-        numeros_gras = re.findall(r'\*\*\s*(\d{1,2})\s*\*\*', texte_ia)
-        if len(numeros_gras) >= 2:
-            return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
-
-        # Méthode 2: Chercher une ligne contenant "Prédiction Finale" ou "sont :"
         lignes = texte_ia.splitlines()
-        for ligne in lignes:
+        for i, ligne in enumerate(lignes):
             if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
-                numeros = re.findall(r'\b(\d{1,2})\b', ligne)
-                if len(numeros) >= 2:
-                    return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
-        
-        # Méthode 3 (dernier recours): Chercher les deux premiers nombres uniques dans tout le texte
-        tous_les_numeros_bruts = re.findall(r'\b(\d{1,2})\b', texte_ia)
-        candidats_uniques = []
-        for num in tous_les_numeros_bruts:
-            if num not in candidats_uniques:
-                candidats_uniques.append(num)
-
-        if len(candidats_uniques) >= 2:
-            # On filtre les numéros trop fréquents qui ne sont pas des prédictions (ex: fenêtres 3, 50)
-            candidats_filtres = [n for n in candidats_uniques if n not in ['3', '50', '1', '2', '15']]
-            if len(candidats_filtres) >= 2:
-                return f"Les numéros prédits sont : {candidats_filtres[0]} et {candidats_filtres[1]}"
-
-        # Si tout échoue
+                prediction_text = ligne
+                numeros = re.findall(r'\b\d{1,2}\b', prediction_text)
+                if len(numeros) >= 2: return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
+        numeros_gras = re.findall(r'\*\*\s*(\d{1,2})\s*\*\*', texte_ia)
+        if len(numeros_gras) >= 2: return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
         return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."
 
-def lancer_analyse_complete(db_client):
+def lancer_analyse_complete(db):
     """Exécute tout le pipeline en utilisant la connexion Firestore fournie."""
-    global db
-    db = db_client # On s'assure que le module utilise la bonne connexion
-    
     if not db:
         return {"erreur": "La connexion à la base de données n'est pas disponible pour l'analyse."}
     
     print("--- Lancement de l'analyse complète (version web) ---")
-    base_connaissance = lire_base_connaissance_depuis_firestore()
-    tous_les_tirages = lire_tirages_depuis_firestore()
+    base_connaissance = lire_base_connaissance_depuis_firestore(db)
+    tous_les_tirages = lire_tirages_depuis_firestore(db)
     
     if not tous_les_tirages: return {"erreur": "Le chargement des tirages depuis Firestore a échoué."}
     if not base_connaissance: return {"erreur": "Le chargement de la base de connaissance depuis Firestore a échoué."}

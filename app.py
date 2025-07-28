@@ -5,7 +5,6 @@ import os
 import json
 
 # --- On importe nos bibliothèques personnelles ---
-# On s'assure que les fichiers existent avant de les importer
 try:
     from analyse_loto import lancer_analyse_complete
     from cron_update_firestore import lancer_collecte_vers_firestore
@@ -20,7 +19,6 @@ try:
     SECRETS_DISPONIBLES = True
 except ImportError:
     SECRETS_DISPONIBLES = False
-    print("Avertissement : Fichier settings.py non trouvé.")
 
 # --- INITIALISATION DE L'APPLICATION FLASK ---
 app = Flask(__name__)
@@ -29,13 +27,15 @@ app.secret_key = os.urandom(24)
 # --- INITIALISATION DE FIREBASE (une seule fois, au démarrage de l'app) ---
 db = None
 try:
-    if SECRETS_DISPONIBLES:
-        cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-        firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("✅ [APP] Connexion à Firebase réussie au démarrage.")
-    else:
+    if not SECRETS_DISPONIBLES:
+        # Cette erreur arrêtera le serveur si les secrets ne sont pas là
         raise ValueError("Fichier settings.py manquant ou invalide. L'application ne peut pas démarrer.")
+    
+    cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
+    firebase_admin.initialize_app(cred)
+    db = firestore.client()
+    print("✅ [APP] Connexion à Firebase réussie au démarrage.")
+
 except Exception as e:
     print(f"❌ [APP] ERREUR CRITIQUE AU DÉMARRAGE : Impossible d'initialiser Firebase. {e}")
 
@@ -50,7 +50,7 @@ def login():
             flash("Erreur serveur : la base de données n'est pas connectée.", "error")
             return render_template('login.html')
         email = request.form['email']
-        password = request.form['password'] # Mot de passe non vérifié par le SDK Admin
+        password = request.form['password']
         try:
             user = auth.get_user_by_email(email)
             session['user_uid'] = user.uid
@@ -87,7 +87,7 @@ def mettre_a_jour():
         flash("Accès non autorisé.", "error"); return redirect(url_for('dashboard'))
     if not MODULES_DISPONIBLES:
         flash("Erreur serveur : module de collecte manquant.", "error"); return redirect(url_for('dashboard'))
-    # La fonction de collecte gère sa propre connexion
+    # La fonction de collecte va réutiliser la connexion existante
     message = lancer_collecte_vers_firestore()
     flash(message); return redirect(url_for('dashboard'))
 
