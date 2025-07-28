@@ -14,7 +14,9 @@ import pandas as pd
 # --- Imports pour la visualisation et l'IA ---
 try:
     import matplotlib
-    matplotlib.use('Agg') # Mode non-interactif, crucial pour les serveurs
+    # --- LIGNE DE CORRECTION CRUCIALE ---
+    # Force matplotlib à utiliser un backend non-interactif, nécessaire pour les serveurs
+    matplotlib.use('Agg') 
     import matplotlib.pyplot as plt
     import seaborn as sns
     VISUALISATION_DISPONIBLE = True
@@ -44,7 +46,6 @@ except ImportError:
 # --- VARIABLE GLOBALE POUR LA DB ---
 db = None
 
-# (Les fonctions init_firestore, lire_tirages, etc., ne changent pas et sont incluses ci-dessous)
 def init_firestore():
     """Initialise la connexion à Firestore si elle n'est pas déjà faite."""
     global db
@@ -183,16 +184,62 @@ def generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages):
     return chemins_images
 
 def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles):
-    # ... (fonction inchangée)
-    pass
+    nums_dernier_tirage = dernier_tirage['numeros_sortis']
+    scores_candidats = Counter()
+    for numero in nums_dernier_tirage:
+        if numero in rapport_rgntc:
+            for suiveur, score in rapport_rgntc[numero]['suiveurs']:
+                if suiveur not in nums_dernier_tirage:
+                    scores_candidats[suiveur] += score
+    top_candidats = scores_candidats.most_common(NOMBRE_CANDIDATS_A_ANALYSER)
+    prompt = f"Tu es un expert en analyse de loterie. Fais une prédiction de 2 numéros en combinant toutes les informations.\n\n" \
+             f"CONTEXTE:\n- Derniers numéros sortis: {nums_dernier_tirage}\n\n" \
+             f"1. ANALYSE DYNAMIQUE (Candidats et leur état récent):\n"
+    for candidat, score in top_candidats:
+        if candidat in forme_ecart_data:
+            forme = forme_ecart_data[candidat]['forme']; ecart = forme_ecart_data[candidat]['ecart']
+            prompt += f"- Candidat {candidat}: (Score Suiveur: {score}) | Forme: {forme}x/{FENETRE_FORME_ECART} | Écart: {ecart} tirages\n"
+    prompt += f"\n2. ANALYSE STATIQUE (Base de connaissance):\n"
+    confirmations_trouvees = False
+    if base_connaissance:
+        for candidat, score in top_candidats:
+            for numero_sorti in nums_dernier_tirage:
+                if numero_sorti in base_connaissance and candidat in base_connaissance[numero_sorti]:
+                    prompt += f"- CONFIRMATION: Le candidat {candidat} est un 'accompagnateur' connu du numéro {numero_sorti}.\n"
+                    confirmations_trouvees = True
+    if not confirmations_trouvees: prompt += "- Aucune confirmation directe trouvée.\n"
+    prompt += f"\n3. ANALYSE TEMPORELLE (basée sur la date du jour):\n"
+    fav_jour, fav_mois = affinites_temporelles
+    prompt += f"- Numéros favoris pour ce jour du mois : " + ", ".join([f"{n}({f}x)" for n, f in fav_jour] or ["Aucun"]) + "\n"
+    prompt += f"- Numéros favoris pour ce mois : " + ", ".join([f"{n}({f}x)" for n, f in fav_mois] or ["Aucun"]) + "\n"
+    prompt += "\n\nTA MISSION FINALE:\n1. Synthétise toutes les convergences.\n2. Choisis les 2 numéros les plus logiques.\n3. Justifie ta prédiction finale."
+    return prompt
 
 def appeler_ia_gemini(prompt):
-    # ... (fonction inchangée)
-    pass
+    if not (IA_DISPONIBLE and SECRETS_DISPONIBLES):
+        return "ERREUR: Module IA ou fichier de secrets non disponible."
+    try:
+        api_key = settings.GOOGLE_API_KEY
+        if not api_key: return "ERREUR : Clé GOOGLE_API_KEY non trouvée dans settings.py"
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(prompt, request_options={'timeout': 100})
+        return response.text
+    except Exception as e:
+        return f"Erreur API Gemini: {e}"
 
 def extraire_prediction_finale(texte_ia):
-    # ... (fonction inchangée)
-    pass
+    try:
+        numeros_gras = re.findall(r'\*\*\s*(\d{1,2})\s*\*\*', texte_ia)
+        if len(numeros_gras) >= 2: return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        lignes = texte_ia.splitlines()
+        for ligne in lignes:
+            if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
+                numeros = re.findall(r'\b(\d{1,2})\b', ligne)
+                if len(numeros) >= 2: return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
+        return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
+    except Exception:
+        return "Erreur lors de l'extraction de la prédiction."
 
 def lancer_analyse_complete(db_client):
     """Exécute tout le pipeline, génère les heatmaps et retourne les résultats."""
@@ -231,7 +278,9 @@ def lancer_analyse_complete(db_client):
     rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
     affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
-    chemins_heatmaps = generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages) # Génération des images
+    
+    # On génère les heatmaps
+    chemins_heatmaps = generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages)
 
     gagnants_str = ",".join(map(str, dernier_tirage_contexte.get('gagnants', [])))
     machine_str = ",".join(map(str, dernier_tirage_contexte.get('machine', [])))
@@ -248,7 +297,6 @@ def lancer_analyse_complete(db_client):
     }
     
     print(f"Sauvegarde de l'analyse dans le cache avec l'ID : {id_cache}")
-    # On ne sauvegarde pas les images elles-mêmes, juste leurs noms
     cache_ref.set(resultat_final)
     
     return resultat_final
