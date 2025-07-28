@@ -21,7 +21,9 @@ except ImportError:
     SECRETS_DISPONIBLES = False
 
 # --- INITIALISATION DE L'APPLICATION FLASK ---
-app = Flask(__name__)
+# --- LIGNE MODIFIÉE ---
+app = Flask(__name__, static_folder='static')
+# --- FIN DE LA MODIFICATION ---
 app.secret_key = os.urandom(24)
 
 # --- INITIALISATION DE FIREBASE (une seule fois, au démarrage de l'app) ---
@@ -49,7 +51,7 @@ def login():
             flash("Erreur serveur : la base de données n'est pas connectée.", "error")
             return render_template('login.html')
         email = request.form['email']
-        password = request.form['password'] # Mot de passe non vérifié par le SDK Admin
+        password = request.form['password']
         try:
             user = auth.get_user_by_email(email)
             session['user_uid'] = user.uid
@@ -73,6 +75,7 @@ def analyser():
     if 'user_uid' not in session: return redirect(url_for('login'))
     if not MODULES_DISPONIBLES:
         flash("Erreur serveur : module d'analyse manquant.", "error"); return redirect(url_for('dashboard'))
+    # On passe la connexion 'db' qui a été initialisée au démarrage
     resultats = lancer_analyse_complete(db)
     if session.get('is_admin'):
         return render_template('resultat_admin.html', resultats=resultats)
@@ -85,30 +88,14 @@ def mettre_a_jour():
         flash("Accès non autorisé.", "error"); return redirect(url_for('dashboard'))
     if not MODULES_DISPONIBLES:
         flash("Erreur serveur : module de collecte manquant.", "error"); return redirect(url_for('dashboard'))
+    # La fonction de collecte va réutiliser la connexion existante
     message = lancer_collecte_vers_firestore()
     flash(message); return redirect(url_for('dashboard'))
-
-# Dans app.py, ajoutez cette fonction
-
-@app.route('/cron/<secret_key>')
-def trigger_cron(secret_key):
-    """
-    Route secrète pour déclencher la collecte de données via un service externe.
-    """
-    # On vérifie que la clé secrète est correcte
-    # Pour plus de sécurité, cette clé devrait être une variable d'environnement sur Render
-    CORRECT_KEY = "Y8fa3biJ943AHy" 
-    
-    if secret_key != CORRECT_KEY:
-        return "Clé invalide.", 403 # Accès interdit
-
-    print("--- Déclenchement du Cron Job manuel via URL ---")
-    message = lancer_collecte_vers_firestore()
-    return f"Tâche de collecte terminée. Résultat : {message}"
 
 @app.route('/logout')
 def logout():
     session.clear(); return redirect(url_for('login'))
 
 if __name__ == '__main__':
+    # Cette partie est pour tester sur votre ordinateur, pas sur Render
     app.run(debug=True, host="0.0.0.0", port=5001)
