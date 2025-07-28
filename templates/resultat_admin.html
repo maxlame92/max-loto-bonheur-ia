@@ -30,7 +30,7 @@
             <h2>🧠 Analyse Détaillée de l'IA 🧠</h2>
             <pre>{{ resultats.reponse_ia }}</pre>
 
-            <!-- SECTION POUR LES HEATMAPS -->
+            <!-- SECTION POUR LES HEATMAPS AVEC DIAGNOSTIC -->
             <hr style="margin-top: 40px; margin-bottom: 40px;">
             <h2>📊 Visualisations (Heatmaps) 📊</h2>
             {% if resultats.heatmaps and not resultats.heatmaps.erreur %}
@@ -48,6 +48,7 @@
                 </div>
             {% elif resultats.heatmaps and resultats.heatmaps.erreur %}
                 <p style="color: red;"><strong>Les heatmaps n'ont pas pu être générées.</strong></p>
+                <p>Voici l'erreur technique renvoyée par le serveur :</p>
                 <pre style="background-color: #f8d7da; color: #721c24;">{{ resultats.heatmaps.erreur }}</pre>
             {% else %}
                 <p>Aucune donnée de heatmap disponible.</p>
