@@ -7,7 +7,8 @@
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 20px; padding: 20px;}
         .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); max-width: 800px; margin: auto; }
-        h1, h2 { color: #5a2a99; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h1, h2, h3 { color: #5a2a99; }
+        h2, h3 { border-bottom: 2px solid #eee; padding-bottom: 10px; }
         pre { background-color: #f8f9fa; border: 1px solid #eee; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 1.1em; line-height: 1.6; }
         .back-link { background-color: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px; transition: background-color 0.3s;}
         .back-link:hover { background-color: #5a6268; }
@@ -16,6 +17,7 @@
 <body>
     <div class="container">
         <h1>Résultat de l'Analyse (Vue Admin)</h1>
+        <h3>Cible de la prédiction : {{ resultats.cible }}</h3>
         
         {% if resultats.erreur %}
             <h2 style="color: #721c24;">Erreur</h2>
@@ -27,7 +29,7 @@
             <h2>🧠 Analyse Détaillée de l'IA 🧠</h2>
             <pre>{{ resultats.reponse_ia }}</pre>
         {% endif %}
-
+        
         <a href="{{ url_for('dashboard') }}" class="back-link">Retour au tableau de bord</a>
     </div>
 </body>

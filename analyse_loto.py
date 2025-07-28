@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-# Ce fichier est une bibliothèque de fonctions. Il ne gère plus la connexion.
+# Ce fichier est une bibliothèque de fonctions qui lit depuis Firestore.
 
+import firebase_admin
+from firebase_admin import credentials, firestore
 from collections import defaultdict, Counter
 import time
 import json
@@ -8,24 +10,29 @@ import os
 from datetime import datetime, timedelta
 import re
 
+# On importe les fonctions du collecteur car on en a besoin pour la détection
 try:
-    import google.generativeai as genai
-    IA_DISPONIBLE = True
-except ImportError:
-    IA_DISPONIBLE = False
-
-try:
-    from cron_update_firestore import get_latest_data_from_api, parse_and_transform, deviner_heure_precise
+    from cron_update_firestore import get_latest_data_from_api, parse_and_transform
     MODULES_COLLECTE_DISPONIBLES = True
 except ImportError:
     MODULES_COLLECTE_DISPONIBLES = False
 
-# --- On importe les secrets ---
+# --- On importe les secrets (si le fichier existe) ---
 try:
     import settings
     SECRETS_DISPONIBLES = True
 except ImportError:
     SECRETS_DISPONIBLES = False
+
+# --- VARIABLE GLOBALE POUR LA DB (initialisée à None) ---
+db = None
+
+# --- Imports IA ---
+try:
+    import google.generativeai as genai
+    IA_DISPONIBLE = True
+except ImportError:
+    IA_DISPONIBLE = False
 
 # --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
@@ -33,10 +40,36 @@ FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
 
 # --- FONCTIONS ---
+def detecter_prochain_tirage_et_contexte():
+    """Appelle l'API, trouve le dernier tirage réel et déduit la prochaine cible."""
+    if not MODULES_COLLECTE_DISPONIBLES:
+        return None, "Module de collecte manquant"
+
+    print("-> Détection du dernier tirage via l'API...")
+    api_data = get_latest_data_from_api()
+    tirages_recents = parse_and_transform(api_data) 
+    
+    if not tirages_recents:
+        return None, "Impossible de déterminer le contexte (API inaccessible)"
+
+    tirages_recents.sort(key=lambda x: x['data']['date_obj'], reverse=True)
+    dernier_tirage_api = tirages_recents[0]
+
+    heure_dernier_tirage_str = dernier_tirage_api['data']['date_obj'].strftime('%H:%M')
+    
+    heures_ordonnees = ["07:00", "08:00", "10:00", "13:00", "16:00", "19:00", "21:00", "22:00", "23:00"]
+    cible = "Demain (07:00)"
+    try:
+        index_actuel = heures_ordonnees.index(heure_dernier_tirage_str)
+        if index_actuel + 1 < len(heures_ordonnees):
+            cible = f"Aujourd'hui ({heures_ordonnees[index_actuel + 1]})"
+    except ValueError:
+        pass
+        
+    return dernier_tirage_api, cible
+
 def lire_tirages_depuis_firestore(db):
-    if not db:
-        print("❌ Erreur (analyse): la connexion DB n'a pas été fournie.")
-        return None
+    if not db: return None
     print("-> Lecture des tirages depuis Firestore...")
     try:
         tirages_ref = db.collection('tirages').order_by('date_obj', direction='DESCENDING').limit(5000)
@@ -46,22 +79,16 @@ def lire_tirages_depuis_firestore(db):
             data = doc.to_dict()
             gagnants, machine = data.get('gagnants', []), data.get('machine', [])
             numeros_sortis = set(gagnants + machine)
-            date_obj = data.get('date_obj')
-            if isinstance(date_obj, str):
-                date_obj = datetime.fromisoformat(date_obj)
-            tirages.append({
-                "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
-                "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
-            })
+            date_obj = data.get('date_obj');
+            if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
+            tirages.append({"date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"), "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)})
         print(f"-> {len(tirages)} tirages chargés depuis Firestore.")
         return sorted(tirages, key=lambda x: x['date_obj'])
     except Exception as e:
         print(f"❌ Erreur lecture tirages Firestore : {e}"); return None
 
 def lire_base_connaissance_depuis_firestore(db):
-    if not db:
-        print("❌ Erreur (analyse): la connexion DB n'a pas été fournie.")
-        return None
+    if not db: return None
     print("-> Lecture de la base de connaissance depuis Firestore...")
     try:
         docs = db.collection('connaissance').stream()
@@ -133,7 +160,7 @@ def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data
     fav_jour, fav_mois = affinites_temporelles
     prompt += f"- Numéros favoris pour ce jour du mois : " + ", ".join([f"{n}({f}x)" for n, f in fav_jour] or ["Aucun"]) + "\n"
     prompt += f"- Numéros favoris pour ce mois : " + ", ".join([f"{n}({f}x)" for n, f in fav_mois] or ["Aucun"]) + "\n"
-    prompt += "\n\nTA MISSION FINALE:\n1. Synthétise les convergences.\n2. Choisis les 2 numéros les plus logiques.\n3. Justifie ta prédiction finale."
+    prompt += "\n\nTA MISSION FINALE:\n1. Synthétise toutes les convergences.\n2. Choisis les 2 numéros les plus logiques.\n3. Justifie ta prédiction finale."
     return prompt
 
 def appeler_ia_gemini(prompt):
@@ -162,26 +189,6 @@ def extraire_prediction_finale(texte_ia):
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."
 
-def detecter_prochain_tirage_et_contexte():
-    if not MODULES_COLLECTE_DISPONIBLES:
-        return None, "Module de collecte manquant"
-    print("-> Détection du dernier tirage via l'API...")
-    api_data = get_latest_data_from_api()
-    tirages_recents = parse_and_transform(api_data) 
-    if not tirages_recents:
-        return None, "Impossible de déterminer le contexte (API inaccessible)"
-    tirages_recents.sort(key=lambda x: x['data']['date_obj'], reverse=True)
-    dernier_tirage_api = tirages_recents[0]
-    heure_dernier_tirage_str = dernier_tirage_api['data']['date_obj'].strftime('%H:%M')
-    heures_ordonnees = ["07:00", "08:00", "10:00", "13:00", "16:00", "19:00", "21:00", "22:00", "23:00"]
-    cible = "Demain matin (07:00)"
-    try:
-        index_actuel = heures_ordonnees.index(heure_dernier_tirage_str)
-        if index_actuel + 1 < len(heures_ordonnees):
-            cible = f"Prochain tirage : {heures_ordonnees[index_actuel + 1]}"
-    except ValueError: pass
-    return dernier_tirage_api, cible
-
 def lancer_analyse_complete(db):
     if not db:
         return {"erreur": "La connexion à la base de données n'est pas disponible pour l'analyse."}
@@ -189,17 +196,25 @@ def lancer_analyse_complete(db):
     dernier_tirage_api, cible_tirage = detecter_prochain_tirage_et_contexte()
     if not dernier_tirage_api:
         return {"erreur": cible_tirage, "cible": "Inconnue"}
+
     date_jour = datetime.now().strftime('%Y-%m-%d')
     id_cache = f"{date_jour}_{cible_tirage.replace(' ', '').replace(':', 'h').replace('(', '').replace(')', '')}"
+    
     cache_ref = db.collection('predictions_cache').document(id_cache)
     doc_cache = cache_ref.get()
+    
     if doc_cache.exists:
         print(f"--- Analyse pour la cible '{cible_tirage}' trouvée dans le cache ! ---")
-        return doc_cache.to_dict()
+        cached_data = doc_cache.to_dict()
+        # On s'assure que toutes les clés nécessaires sont présentes
+        cached_data.setdefault('cible', cible_tirage)
+        return cached_data
     
     print(f"--- Nouvelle analyse pour la cible '{cible_tirage}' ---")
+    
     base_connaissance = lire_base_connaissance_depuis_firestore(db)
     tous_les_tirages = lire_tirages_depuis_firestore(db)
+    
     if not tous_les_tirages or not base_connaissance:
         return {"erreur": "Le chargement des données depuis Firestore a échoué."}
 
@@ -232,4 +247,5 @@ def lancer_analyse_complete(db):
     
     print(f"Sauvegarde de l'analyse dans le cache avec l'ID : {id_cache}")
     cache_ref.set(resultat_final)
+    
     return resultat_final
