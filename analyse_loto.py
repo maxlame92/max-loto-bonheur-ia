@@ -20,8 +20,10 @@ try:
     import matplotlib.pyplot as plt
     import seaborn as sns
     VISUALISATION_DISPONIBLE = True
-except ImportError:
+    ERREUR_VISUALISATION = None
+except Exception as e:
     VISUALISATION_DISPONIBLE = False
+    ERREUR_VISUALISATION = str(e) # On stocke le message d'erreur précis
 
 try:
     import google.generativeai as genai
@@ -31,7 +33,7 @@ except ImportError:
 
 # On importe les fonctions du collecteur
 try:
-    from cron_update_firestore import get_latest_data_from_api, parse_and_transform, deviner_heure_precise
+    from cron_update_firestore import get_latest_data_from_api, parse_and_transform
     MODULES_COLLECTE_DISPONIBLES = True
 except ImportError:
     MODULES_COLLECTE_DISPONIBLES = False
@@ -150,8 +152,8 @@ def calculer_forme_et_ecart(tous_les_tirages, fenetre=FENETRE_FORME_ECART):
 
 def generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages):
     if not VISUALISATION_DISPONIBLE:
-        print("-> Bibliothèques de visualisation non installées. Heatmaps ignorées.")
-        return None
+        print(f"-> Heatmaps ignorées. Erreur à l'import: {ERREUR_VISUALISATION}")
+        return {"erreur": f"Bibliothèques de visualisation non disponibles. Raison : {ERREUR_VISUALISATION}"}
     print("-> Génération des heatmaps...")
     static_folder = 'static'
     if not os.path.exists(static_folder):
@@ -167,8 +169,7 @@ def generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages):
                 for num2, freq in rapport_rgntc[num1][type_relation]:
                     if num2 in top_nums:
                         if type_relation == 'compagnons':
-                            matrice.loc[num1, num2] = freq
-                            matrice.loc[num2, num1] = freq
+                            matrice.loc[num1, num2] = freq; matrice.loc[num2, num1] = freq
                         else:
                             matrice.loc[num1, num2] = freq
         plt.figure(figsize=(18, 15))
@@ -259,7 +260,9 @@ def lancer_analyse_complete(db_client):
     
     if doc_cache.exists:
         print(f"--- Analyse pour la cible '{cible_tirage}' trouvée dans le cache ! ---")
-        return doc_cache.to_dict()
+        cached_data = doc_cache.to_dict()
+        cached_data.setdefault('cible', cible_tirage)
+        return cached_data
     
     print(f"--- Nouvelle analyse pour la cible '{cible_tirage}' ---")
     base_connaissance = lire_base_connaissance_depuis_firestore(db)
@@ -279,7 +282,6 @@ def lancer_analyse_complete(db_client):
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
     affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
     
-    # On génère les heatmaps
     chemins_heatmaps = generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages)
 
     gagnants_str = ",".join(map(str, dernier_tirage_contexte.get('gagnants', [])))
@@ -293,7 +295,7 @@ def lancer_analyse_complete(db_client):
         "contexte": contexte_str, "reponse_ia": reponse_ia,
         "prediction_simple": prediction_simple, "cible": cible_tirage,
         "timestamp": datetime.now(), "erreur": None,
-        "heatmaps": chemins_heatmaps # On ajoute les chemins des images
+        "heatmaps": chemins_heatmaps
     }
     
     print(f"Sauvegarde de l'analyse dans le cache avec l'ID : {id_cache}")

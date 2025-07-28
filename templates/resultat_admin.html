@@ -1,59 +1,23 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Résultat (Admin)</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 20px; padding: 20px;}
-        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); max-width: 800px; margin: auto; }
-        h1, h2, h3 { color: #5a2a99; }
-        h2, h3 { border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        pre { background-color: #f8f9fa; border: 1px solid #eee; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 1.1em; line-height: 1.6; }
-        .back-link { background-color: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px; transition: background-color 0.3s;}
-        .back-link:hover { background-color: #5a6268; }
-        .heatmap-container img { width: 100%; max-width: 750px; border: 1px solid #ddd; border-radius: 5px; margin-top: 15px;}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Résultat de l'Analyse (Vue Admin)</h1>
-        <h3>Cible de la prédiction : {{ resultats.cible }}</h3>
-        
-        {% if resultats.erreur %}
-            <h2 style="color: #721c24;">Erreur</h2>
-            <pre>{{ resultats.erreur }}</pre>
-        {% else %}
-            <h2>Analyse basée sur le dernier tirage :</h2>
-            <pre>{{ resultats.contexte }}</pre>
-
-            <h2>🧠 Analyse Détaillée de l'IA 🧠</h2>
-            <pre>{{ resultats.reponse_ia }}</pre>
-
-            <!-- NOUVELLE SECTION POUR LES HEATMAPS -->
-            <hr style="margin-top: 40px; margin-bottom: 40px;">
-            <h2>📊 Visualisations (Heatmaps) 📊</h2>
-            {% if resultats.heatmaps %}
-                <div class="heatmap-container">
-                    <h3>Compagnons</h3>
-                    <img src="{{ url_for('static', filename=resultats.heatmaps.compagnons) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Compagnons">
-                </div>
-                <div class="heatmap-container" style="margin-top: 30px;">
-                    <h3>Suiveurs</h3>
-                    <img src="{{ url_for('static', filename=resultats.heatmaps.suiveurs) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Suiveurs">
-                </div>
-                <div class="heatmap-container" style="margin-top: 30px;">
-                    <h3>Précurseurs</h3>
-                    <img src="{{ url_for('static', filename=resultats.heatmaps.precurseurs) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Précurseurs">
-                </div>
-            {% else %}
-                <p>Les heatmaps n'ont pas pu être générées (bibliothèques de visualisation manquantes sur le serveur).</p>
-            {% endif %}
-            <!-- FIN DE LA NOUVELLE SECTION -->
-
-        {% endif %}
-        
-        <a href="{{ url_for('dashboard') }}" class="back-link">Retour au tableau de bord</a>
+<!-- NOUVELLE SECTION POUR LES HEATMAPS -->
+<hr style="margin-top: 40px; margin-bottom: 40px;">
+<h2>📊 Visualisations (Heatmaps) 📊</h2>
+{% if resultats.heatmaps and not resultats.heatmaps.erreur %}
+    <div class="heatmap-container">
+        <h3>Compagnons</h3>
+        <img src="{{ url_for('static', filename=resultats.heatmaps.compagnons) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Compagnons">
     </div>
-</body>
-</html>
+    <div class="heatmap-container" style="margin-top: 30px;">
+        <h3>Suiveurs</h3>
+        <img src="{{ url_for('static', filename=resultats.heatmaps.suiveurs) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Suiveurs">
+    </div>
+    <div class="heatmap-container" style="margin-top: 30px;">
+        <h3>Précurseurs</h3>
+        <img src="{{ url_for('static', filename=resultats.heatmaps.precurseurs) }}?v={{ resultats.timestamp.timestamp() }}" alt="Heatmap Précurseurs">
+    </div>
+{% elif resultats.heatmaps and resultats.heatmaps.erreur %}
+    <p style="color: red;"><strong>Les heatmaps n'ont pas pu être générées.</strong></p>
+    <pre>{{ resultats.heatmaps.erreur }}</pre>
+{% else %}
+    <p>Aucune donnée de heatmap disponible.</p>
+{% endif %}
+<!-- FIN DE LA NOUVELLE SECTION -->
