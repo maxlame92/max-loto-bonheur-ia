@@ -1,32 +1,96 @@
 # -*- coding: utf-8 -*-
-# Ce fichier est une bibliothèque de fonctions. Il ne gère plus la connexion.
+# Ce fichier est une bibliothèque de fonctions qui lit depuis Firestore.
 
+import firebase_admin
+from firebase_admin import credentials, firestore
 from collections import defaultdict, Counter
 import time
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
+# On importe les fonctions du collecteur car on en a besoin pour la détection
 try:
-    import google.generativeai as genai
-    IA_DISPONIBLE = True
+    from cron_update_firestore import get_latest_data_from_api, parse_and_transform, deviner_heure_precise
+    MODULES_COLLECTE_DISPONIBLES = True
 except ImportError:
-    IA_DISPONIBLE = False
+    MODULES_COLLECTE_DISPONIBLES = False
 
-# --- On importe les secrets ---
+# --- On importe les secrets (si le fichier existe) ---
 try:
     import settings
     SECRETS_DISPONIBLES = True
 except ImportError:
     SECRETS_DISPONIBLES = False
 
-# --- PARAMÈTRES OPTIMISÉS (Suite à nos tests) ---
+# --- VARIABLE GLOBALE POUR LA DB (initialisée à None) ---
+db = None
+
+def init_firestore():
+    """Initialise la connexion à Firestore si elle n'est pas déjà faite."""
+    global db
+    if db is None and not firebase_admin._apps:
+        print("Tentative d'initialisation de Firebase pour l'analyse...")
+        try:
+            if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
+                cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
+                firebase_admin.initialize_app(cred)
+                db = firestore.client()
+                print("✅ Connexion à Firebase réussie via settings.py.")
+                return True
+            else:
+                raise ValueError("Fichier settings.py ou secrets non trouvés.")
+        except Exception as e:
+            print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
+            return False
+    elif db is None and firebase_admin._apps:
+        db = firestore.client()
+    return True
+
+# --- Imports IA ---
+try:
+    import google.generativeai as genai
+    IA_DISPONIBLE = True
+except ImportError:
+    IA_DISPONIBLE = False
+
+# --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
 FENETRE_FORME_ECART = 50
 NOMBRE_CANDIDATS_A_ANALYSER = 15
 
 # --- FONCTIONS ---
+def detecter_prochain_tirage_et_contexte():
+    """Appelle l'API, trouve le dernier tirage réel et déduit la prochaine cible."""
+    if not MODULES_COLLECTE_DISPONIBLES:
+        return None, "Module de collecte manquant"
+
+    print("-> Détection du dernier tirage via l'API...")
+    api_data = get_latest_data_from_api()
+    tirages_recents = parse_and_transform(api_data) 
+    
+    if not tirages_recents:
+        return None, "Impossible de déterminer le contexte (API inaccessible)"
+
+    tirages_recents.sort(key=lambda x: x['data']['date_obj'], reverse=True)
+    dernier_tirage_api = tirages_recents[0]
+
+    dernier_tirage_nom = dernier_tirage_api['data']['nom_du_tirage']
+    heure_dernier_tirage_str = dernier_tirage_api['data']['date_obj'].strftime('%H:%M')
+    
+    heures_ordonnees = ["07:00", "08:00", "10:00", "13:00", "16:00", "19:00", "21:00", "22:00", "23:00"]
+    
+    cible = "Demain matin (07:00)"
+    try:
+        index_actuel = heures_ordonnees.index(heure_dernier_tirage_str)
+        if index_actuel + 1 < len(heures_ordonnees):
+            cible = f"Prochain tirage : {heures_ordonnees[index_actuel + 1]}"
+    except ValueError:
+        pass
+        
+    return dernier_tirage_api, cible
+
 def lire_tirages_depuis_firestore(db):
     if not db: return None
     print("-> Lecture des tirages depuis Firestore...")
@@ -40,10 +104,7 @@ def lire_tirages_depuis_firestore(db):
             numeros_sortis = set(gagnants + machine)
             date_obj = data.get('date_obj')
             if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
-            tirages.append({
-                "date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"),
-                "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)
-            })
+            tirages.append({"date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"), "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)})
         print(f"-> {len(tirages)} tirages chargés depuis Firestore.")
         return sorted(tirages, key=lambda x: x['date_obj'])
     except Exception as e:
@@ -141,43 +202,102 @@ def appeler_ia_gemini(prompt):
 def extraire_prediction_finale(texte_ia):
     try:
         numeros_gras = re.findall(r'\*\*\s*(\d{1,2})\s*\*\*', texte_ia)
-        if len(numeros_gras) >= 2:
-            return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
+        if len(numeros_gras) >= 2: return f"Les numéros prédits sont : {numeros_gras[0]} et {numeros_gras[1]}"
         lignes = texte_ia.splitlines()
         for ligne in lignes:
             if "prédiction finale" in ligne.lower() or "sont :" in ligne.lower():
                 numeros = re.findall(r'\b(\d{1,2})\b', ligne)
-                if len(numeros) >= 2:
-                    return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
+                if len(numeros) >= 2: return f"Les numéros prédits sont : {numeros[0]} et {numeros[1]}"
         return "Prédiction non trouvée. Veuillez consulter l'analyse complète."
     except Exception:
         return "Erreur lors de l'extraction de la prédiction."
 
-def lancer_analyse_complete(db):
+def lancer_analyse_complete(db_client):
     """Exécute tout le pipeline en utilisant la connexion Firestore fournie."""
+    global db
+    db = db_client
     if not db:
         return {"erreur": "La connexion à la base de données n'est pas disponible pour l'analyse."}
     
-    print("--- Lancement de l'analyse complète (version web) ---")
+    # --- NOUVELLE LOGIQUE DE DÉTECTION ET DE CACHE ---
+    dernier_tirage_api, cible_tirage = detecter_prochain_tirage_et_contexte()
+    if not dernier_tirage_api:
+        return {"erreur": cible_tirage, "cible": "Inconnue"}
+
+    date_jour = datetime.now().strftime('%Y-%m-%d')
+    id_cache = f"{date_jour}_{cible_tirage.replace(' ', '').replace(':', 'h').replace('(', '').replace(')', '')}"
+    
+    cache_ref = db.collection('predictions_cache').document(id_cache)
+    doc_cache = cache_ref.get()
+    
+    if doc_cache.exists:
+        print(f"--- Analyse pour la cible '{cible_tirage}' trouvée dans le cache ! ---")
+        return doc_cache.to_dict()
+    # --- FIN DE LA NOUVELLE LOGIQUE ---
+    
+    print(f"--- Nouvelle analyse pour la cible '{cible_tirage}' ---")
+    
     base_connaissance = lire_base_connaissance_depuis_firestore(db)
     tous_les_tirages = lire_tirages_depuis_firestore(db)
     
-    if not tous_les_tirages: return {"erreur": "Le chargement des tirages depuis Firestore a échoué."}
-    if not base_connaissance: return {"erreur": "Le chargement de la base de connaissance depuis Firestore a échoué."}
+    if not tous_les_tirages or not base_connaissance:
+        return {"erreur": "Le chargement des données depuis Firestore a échoué."}
 
+    dernier_tirage_contexte = {
+        'date_obj': dernier_tirage_api['data']['date_obj'],
+        'nom_du_tirage': dernier_tirage_api['data']['nom_du_tirage'],
+        'gagnants': dernier_tirage_api['data']['gagnants'],
+        'machine': dernier_tirage_api['data']['machine'],
+        'numeros_sortis': list(set(dernier_tirage_api['data']['gagnants'] + dernier_tirage_api['data']['machine']))
+    }
+    
     rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
     affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
-    
-    dernier_tirage = tous_les_tirages[-1]
-    gagnants_str = ",".join(map(str, dernier_tirage.get('gagnants', [])))
-    machine_str = ",".join(map(str, dernier_tirage.get('machine', [])))
-    contexte_str = f"{dernier_tirage['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\""
 
-    reponse_ia = appeler_ia_gemini(generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles))
+    gagnants_str = ",".join(map(str, dernier_tirage_contexte.get('gagnants', [])))
+    machine_str = ",".join(map(str, dernier_tirage_contexte.get('machine', [])))
+    contexte_str = f"{dernier_tirage_contexte['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage_contexte['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\""
+
+    reponse_ia = appeler_ia_gemini(generer_prompt_final_pour_ia(dernier_tirage_contexte, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles))
     prediction_simple = extraire_prediction_finale(reponse_ia)
 
-    return {
+    resultat_final = {
         "contexte": contexte_str, "reponse_ia": reponse_ia,
-        "prediction_simple": prediction_simple, "erreur": None
+        "prediction_simple": prediction_simple,
+        "cible": cible_tirage,
+        "timestamp": datetime.now(),
+        "erreur": None
     }
+    
+    print(f"Sauvegarde de l'analyse dans le cache avec l'ID : {id_cache}")
+    cache_ref.set(resultat_final)
+    
+    return resultat_final```
+
+---
+
+### **Étape 2 : Les Fichiers HTML (Complets et Corrigés)**
+
+Nous devons ajouter l'affichage de la "Cible" dans nos deux pages de résultat.
+
+**Fichier : `resultat_admin.html` (Version Complète Corrigée)**
+```html
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><title>Résultat (Admin)</title><style>body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 20px; padding: 20px;} .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); max-width: 800px; margin: auto; } h1, h2, h3 { color: #5a2a99; } h2, h3 { border-bottom: 2px solid #eee; padding-bottom: 10px; } pre { background-color: #f8f9fa; border: 1px solid #eee; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 1.1em; line-height: 1.6; } .back-link { background-color: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px; transition: background-color 0.3s;} .back-link:hover { background-color: #5a6268; }</style></head>
+<body>
+    <div class="container">
+        <h1>Résultat de l'Analyse (Vue Admin)</h1>
+        <h3>Cible de la prédiction : {{ resultats.cible }}</h3>
+        
+        {% if resultats.erreur %}
+            <h2 style="color: #721c24;">Erreur</h2><pre>{{ resultats.erreur }}</pre>
+        {% else %}
+            <h2>Analyse basée sur le dernier tirage :</h2><pre>{{ resultats.contexte }}</pre>
+            <h2>🧠 Analyse Détaillée de l'IA 🧠</h2><pre>{{ resultats.reponse_ia }}</pre>
+        {% endif %}
+        
+        <a href="{{ url_for('dashboard') }}" class="back-link">Retour au tableau de bord</a>
+    </div>
+</body>
+</html>

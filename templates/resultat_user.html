@@ -1,33 +1,24 @@
 <!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <title>Prédiction du Jour</title>
-    <style>/* ... (votre style est parfait, pas besoin de le changer) ... */</style>
-</head>
+<html lang="fr"><head><meta charset="UTF-8"><title>Prédiction du Jour</title><style>body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 20px; padding: 20px;} .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); max-width: 800px; margin: auto; } h1, h2, h3 { color: #5a2a99; } h2, h3 { border-bottom: 2px solid #eee; padding-bottom: 10px; } pre { background-color: #f8f9fa; border: 1px solid #eee; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; font-size: 1.1em; line-height: 1.6; } .back-link { background-color: #6c757d; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin-top: 20px; transition: background-color 0.3s;} .back-link:hover { background-color: #5a6268; } .prediction-box { text-align: center; font-size: 1.8em; font-weight: bold; color: #5a2a99; background-color: #f8f9fa; padding: 40px; border-radius: 10px; border: 2px dashed #5a2a99; margin-top: 20px;}</style></head>
 <body>
     <div class="container">
         <h1>Prédiction du Jour</h1>
-        
-        {% if resultats.erreur %}
-            <h2 style="color: red;">Erreur</h2>
-            <pre>{{ resultats.erreur }}</pre>
-        {% else %}
-            <h2>Analyse basée sur le dernier tirage :</h2>
-            <pre>{{ resultats.contexte }}</pre>
+        <h3>Cible de la prédiction : {{ resultats.cible }}</h3>
 
+        {% if resultats.erreur %}
+            <h2 style="color: #721c24;">Erreur</h2><pre>{{ resultats.erreur }}</pre>
+        {% else %}
+            <h2>Analyse basée sur le dernier tirage :</h2><pre>{{ resultats.contexte }}</pre>
             <h2>🔮 Prédiction Finale de l'IA 🔮</h2>
             <div class="prediction-box">
-                {% if "Prédiction non trouvée" in resultats.prediction_simple %}
-                    <!-- Si l'extraction a échoué, on affiche tout pour ne pas être bloqué -->
+                {% if "Prédiction non trouvée" in resultats.prediction_simple or "Erreur" in resultats.prediction_simple %}
                     <pre style="text-align: left; background: none; border: none;">{{ resultats.reponse_ia }}</pre>
                 {% else %}
-                    <!-- Sinon, on affiche la prédiction simple et claire -->
                     {{ resultats.prediction_simple }}
                 {% endif %}
             </div>
         {% endif %}
-
+        
         <a href="{{ url_for('dashboard') }}" class="back-link">Retour au tableau de bord</a>
     </div>
 </body>
