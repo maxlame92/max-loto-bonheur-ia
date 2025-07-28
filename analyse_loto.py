@@ -46,25 +46,6 @@ except ImportError:
 # --- VARIABLE GLOBALE POUR LA DB ---
 db = None
 
-def init_firestore():
-    """Initialise la connexion à Firestore si elle n'est pas déjà faite."""
-    global db
-    if db is None and not firebase_admin._apps:
-        try:
-            if SECRETS_DISPONIBLES and hasattr(settings, 'FIREBASE_SERVICE_ACCOUNT_DICT'):
-                cred = credentials.Certificate(settings.FIREBASE_SERVICE_ACCOUNT_DICT)
-                firebase_admin.initialize_app(cred)
-                db = firestore.client()
-                return True
-            else:
-                raise ValueError("Fichier settings.py ou secrets non trouvés.")
-        except Exception as e:
-            print(f"❌ ERREUR CRITIQUE : Impossible d'initialiser Firebase. {e}")
-            return False
-    elif db is None and firebase_admin._apps:
-        db = firestore.client()
-    return True
-
 # --- CONFIGURATIONS ---
 FENETRE_RGNTC = 3
 FENETRE_FORME_ECART = 50
@@ -90,9 +71,12 @@ def detecter_prochain_tirage_et_contexte():
     return dernier_tirage_api, cible
 
 def lire_tirages_depuis_firestore(db):
+    """Lit les 1000 derniers tirages depuis Firestore pour l'analyse."""
     if not db: return None
+    print("-> Lecture des tirages depuis Firestore (Optimisée)...")
     try:
-        tirages_ref = db.collection('tirages').order_by('date_obj', direction='DESCENDING').limit(5000)
+        # --- OPTIMISATION ICI : On ne lit que les 1000 derniers tirages ---
+        tirages_ref = db.collection('tirages').order_by('date_obj', direction='DESCENDING').limit(1000)
         docs = tirages_ref.stream()
         tirages = []
         for doc in docs:
@@ -102,15 +86,18 @@ def lire_tirages_depuis_firestore(db):
             date_obj = data.get('date_obj')
             if isinstance(date_obj, str): date_obj = datetime.fromisoformat(date_obj)
             tirages.append({"date_obj": date_obj, "nom_du_tirage": data.get("nom_du_tirage"), "gagnants": gagnants, "machine": machine, "numeros_sortis": list(numeros_sortis)})
+        print(f"-> {len(tirages)} tirages récents chargés depuis Firestore.")
         return sorted(tirages, key=lambda x: x['date_obj'])
     except Exception as e:
         print(f"❌ Erreur lecture tirages Firestore : {e}"); return None
 
 def lire_base_connaissance_depuis_firestore(db):
     if not db: return None
+    print("-> Lecture de la base de connaissance depuis Firestore...")
     try:
         docs = db.collection('connaissance').stream()
         base_connaissance = {int(doc.id): set(doc.to_dict().get('accompagnateurs', [])) for doc in docs}
+        print(f"-> {len(base_connaissance)} règles de connaissance chargées.")
         return base_connaissance
     except Exception as e:
         print(f"❌ Erreur lecture connaissance Firestore : {e}"); return None
@@ -125,6 +112,7 @@ def analyser_affinites_temporelles(tous_les_tirages, date_cible):
     return frequence_jour.most_common(5), frequence_mois.most_common(5)
 
 def analyser_relations_rgntc(tous_les_tirages, fenetre=FENETRE_RGNTC):
+    print("-> Calcul des relations RGNTC...")
     rapport = defaultdict(lambda: {k: Counter() for k in ["precurseurs", "compagnons", "suiveurs"]})
     total = len(tous_les_tirages)
     for i, t in enumerate(tous_les_tirages):
@@ -137,6 +125,7 @@ def analyser_relations_rgntc(tous_les_tirages, fenetre=FENETRE_RGNTC):
     return {num: {k: v.most_common(50) for k, v in rel.items()} for num, rel in rapport.items()}
 
 def calculer_forme_et_ecart(tous_les_tirages, fenetre=FENETRE_FORME_ECART):
+    print("-> Calcul de la Forme et de l'Écart...")
     forme_ecart_data, derniers_tirages_sets = {}, [set(t['numeros_sortis']) for t in tous_les_tirages[-fenetre:]]
     for numero in range(1, 91):
         forme = sum(1 for ts in derniers_tirages_sets if numero in ts)
@@ -147,18 +136,6 @@ def calculer_forme_et_ecart(tous_les_tirages, fenetre=FENETRE_FORME_ECART):
         if ecart == len(derniers_tirages_sets) and forme == 0: ecart = fenetre
         forme_ecart_data[numero] = {"forme": forme, "ecart": ecart}
     return forme_ecart_data
-
-def analyser_compagnons_recents(tous_les_tirages, jours=7):
-    """Calcule les compagnons les plus fréquents pour chaque numéro sur les X derniers jours."""
-    print(f"-> Analyse des compagnons sur les {jours} derniers jours...")
-    compagnons_recents = defaultdict(Counter)
-    date_limite = datetime.now() - timedelta(days=jours)
-    tirages_recents = [t for t in tous_les_tirages if t['date_obj'].replace(tzinfo=None) > date_limite]
-    for tirage in tirages_recents:
-        nums = set(tirage['numeros_sortis'])
-        for n1 in nums:
-            compagnons_recents[n1].update(list(nums - {n1}))
-    return {num: counter.most_common(5) for num, counter in compagnons_recents.items()}
 
 def generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages):
     if not VISUALISATION_DISPONIBLE:
@@ -193,7 +170,7 @@ def generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages):
     print("-> Heatmaps sauvegardées avec succès.")
     return chemins_images
 
-def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles, compagnons_recents):
+def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles):
     nums_dernier_tirage = dernier_tirage['numeros_sortis']
     scores_candidats = Counter()
     for numero in nums_dernier_tirage:
@@ -202,22 +179,14 @@ def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data
                 if suiveur not in nums_dernier_tirage:
                     scores_candidats[suiveur] += score
     top_candidats = scores_candidats.most_common(NOMBRE_CANDIDATS_A_ANALYSER)
-    prompt = f"Tu es un expert en analyse de loterie. Fais une prédiction de 2 numéros en te basant sur une analyse multicouche. Donne plus de poids aux informations les plus récentes.\n\n" \
+    prompt = f"Tu es un expert en analyse de loterie. Fais une prédiction de 2 numéros en combinant toutes les informations.\n\n" \
              f"CONTEXTE:\n- Derniers numéros sortis: {nums_dernier_tirage}\n\n" \
              f"1. ANALYSE DYNAMIQUE (Candidats et leur état récent):\n"
     for candidat, score in top_candidats:
         if candidat in forme_ecart_data:
             forme = forme_ecart_data[candidat]['forme']; ecart = forme_ecart_data[candidat]['ecart']
             prompt += f"- Candidat {candidat}: (Score Suiveur: {score}) | Forme: {forme}x/{FENETRE_FORME_ECART} | Écart: {ecart} tirages\n"
-    prompt += f"\n2. ANALYSE DES COMPAGNONS TRÈS RÉCENTS (7 derniers jours):\n"
-    confirmations_recentes = False
-    for candidat, score in top_candidats:
-        if candidat in compagnons_recents:
-            compagnons_str = ", ".join([f"{n}({f}x)" for n, f in compagnons_recents[candidat]])
-            prompt += f"- Le candidat {candidat} a récemment été compagnon avec : {compagnons_str}\n"
-            confirmations_recentes = True
-    if not confirmations_recentes: prompt += "- Aucune tendance de compagnons forte détectée sur les 7 derniers jours.\n"
-    prompt += f"\n3. ANALYSE STATIQUE (Base de connaissance long terme):\n"
+    prompt += f"\n2. ANALYSE STATIQUE (Base de connaissance):\n"
     confirmations_trouvees = False
     if base_connaissance:
         for candidat, score in top_candidats:
@@ -226,13 +195,11 @@ def generer_prompt_final_pour_ia(dernier_tirage, rapport_rgntc, forme_ecart_data
                     prompt += f"- CONFIRMATION: Le candidat {candidat} est un 'accompagnateur' connu du numéro {numero_sorti}.\n"
                     confirmations_trouvees = True
     if not confirmations_trouvees: prompt += "- Aucune confirmation directe trouvée.\n"
-    prompt += f"\n4. ANALYSE TEMPORELLE (jour et mois):\n"
+    prompt += f"\n3. ANALYSE TEMPORELLE (basée sur la date du jour):\n"
     fav_jour, fav_mois = affinites_temporelles
     prompt += f"- Numéros favoris pour ce jour du mois : " + ", ".join([f"{n}({f}x)" for n, f in fav_jour] or ["Aucun"]) + "\n"
     prompt += f"- Numéros favoris pour ce mois : " + ", ".join([f"{n}({f}x)" for n, f in fav_mois] or ["Aucun"]) + "\n"
-    prompt += "\n\nTA MISSION FINALE:\n1. Synthétise toutes les convergences en donnant une priorité forte aux tendances très récentes (compagnons des 7 derniers jours).\n" \
-              "2. Choisis les 2 numéros les plus logiques.\n" \
-              "3. Justifie ta prédiction finale."
+    prompt += "\n\nTA MISSION FINALE:\n1. Synthétise toutes les convergences.\n2. Choisis les 2 numéros les plus logiques.\n3. Justifie ta prédiction finale."
     return prompt
 
 def appeler_ia_gemini(prompt):
@@ -275,6 +242,7 @@ def lancer_analyse_complete(db_client):
     id_cache = f"{date_jour}_{cible_tirage.replace(' ', '').replace(':', 'h').replace('(', '').replace(')', '')}"
     cache_ref = db.collection('predictions_cache').document(id_cache)
     doc_cache = cache_ref.get()
+    
     if doc_cache.exists:
         print(f"--- Analyse pour la cible '{cible_tirage}' trouvée dans le cache ! ---")
         return doc_cache.to_dict()
@@ -296,7 +264,6 @@ def lancer_analyse_complete(db_client):
     rapport_rgntc = analyser_relations_rgntc(tous_les_tirages)
     forme_ecart_data = calculer_forme_et_ecart(tous_les_tirages)
     affinites_temporelles = analyser_affinites_temporelles(tous_les_tirages, datetime.now().date())
-    compagnons_recents = analyser_compagnons_recents(tous_les_tirages) # Appel de la nouvelle fonction
     
     chemins_heatmaps = generer_et_sauvegarder_heatmaps(rapport_rgntc, tous_les_tirages)
 
@@ -304,7 +271,7 @@ def lancer_analyse_complete(db_client):
     machine_str = ",".join(map(str, dernier_tirage_contexte.get('machine', [])))
     contexte_str = f"{dernier_tirage_contexte['date_obj'].strftime('%d/%m/%Y %H:%M')},{dernier_tirage_contexte['nom_du_tirage']},\"{gagnants_str}\",\"{machine_str}\""
 
-    reponse_ia = appeler_ia_gemini(generer_prompt_final_pour_ia(dernier_tirage_contexte, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles, compagnons_recents))
+    reponse_ia = appeler_ia_gemini(generer_prompt_final_pour_ia(dernier_tirage_contexte, rapport_rgntc, forme_ecart_data, base_connaissance, affinites_temporelles))
     prediction_simple = extraire_prediction_finale(reponse_ia)
 
     resultat_final = {
